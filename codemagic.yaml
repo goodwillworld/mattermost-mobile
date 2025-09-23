@@ -190,13 +190,20 @@ workflows:
           $FL --version
 
           # ASC API Key JSON
-          cat > asc_api_key.json <<EOF
-          {
-            "key_id":    "${ASC_KEY_ID}",
-            "issuer_id": "${ASC_ISSUER_ID}",
-            "key":       "${ASC_PRIVATE_KEY}",
-            "in_house":  false
-          }
+          # 3) 生成 ASC API Key JSON（用 Python 做安全转义）
+          python3 - <<'PY'
+          import os, json, sys
+          kid = os.environ["ASC_KEY_ID"].strip()
+          iss = os.environ["ASC_ISSUER_ID"].strip()
+          key = os.environ["ASC_PRIVATE_KEY"].replace("\r\n","\n").replace("\r","\n")  # 保留 BEGIN/END 与内容
+          data = {"key_id": kid, "issuer_id": iss, "key": key, "in_house": False}
+          with open("asc_api_key.json","w") as f:
+              json.dump(data, f)   # json.dump 会自动把换行转义为 \n
+          PY
+
+          # 可选：校验 JSON 合法
+          python3 -m json.tool asc_api_key.json >/dev/null && echo "✅ asc_api_key.json OK"
+
           EOF
 
           # 临时 keychain，避免交互
