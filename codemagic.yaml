@@ -161,45 +161,48 @@ workflows:
       - name: 配置 SSH 访问 match 证书库并自检在 match 之前配置 SSH，并自检访问证书库 
         script: |
           set -e
-          [ -n "$MATCH_GIT_URL" ] || { echo "❌ 缺少 MATCH_GIT_URL"; exit 1; }
+          [ -n "$MATCH_GIT_URL" ] || { echo "❌ 缺少 MATCH_GIT_URL（示例：git@github.com:goodwillworld/ios-certs.git）"; exit 1; }
           echo "MATCH_GIT_URL=$MATCH_GIT_URL"
 
-          mkdir -p ~/.ssh
-          # 1) 还原私钥（用 printf + macOS 的 /usr/bin/base64 -D 更稳）
-          if [ -z "$MATCH_SSH_PRIVATE_KEY_B64" ]; then
-            echo "❌ 缺少 MATCH_SSH_PRIVATE_KEY_B64（请把“私钥”的 base64 放到这个变量）"; exit 1
+          # 1) 从单行变量（包含 \n 字符）还原 OpenSSH 私钥为多行文件
+          if [ -z "$MATCH_SSH_PRIVATE_KEY_ESC" ]; then
+            echo "❌ 缺少 MATCH_SSH_PRIVATE_KEY_ESC（单行、含 \\n 的私钥文本）"; exit 1
           fi
-          printf '%s' "$MATCH_SSH_PRIVATE_KEY_B64" | /usr/bin/base64 -D > ~/.ssh/match_key || {
-            echo "❌ base64 解码失败，请确认是“私钥”的 base64（不是 .pub 公钥）"; exit 1;
-          }
+          mkdir -p ~/.ssh
+          printf '%s' "$MATCH_SSH_PRIVATE_KEY_ESC" | python3 - <<'PY'
+      import sys, os
+      s=sys.stdin.read()
+      # 规范行尾，并把字面量 \n 转成真实换行
+      s=s.replace('\r\n','\n').replace('\r','\n').replace('\\n','\n')
+      out=os.path.expanduser('~/.ssh/match_key')
+      open(out,'w').write(s)
+      PY
           chmod 600 ~/.ssh/match_key
 
-          # 2) 头尾检查（必须是 OpenSSH 私钥头尾）
-          HEAD_LINE="$(head -n1 ~/.ssh/match_key || true)"
-          TAIL_LINE="$(tail -n1 ~/.ssh/match_key || true)"
-          echo "Key head: $HEAD_LINE"
-          echo "Key tail: $TAIL_LINE"
-          if [ "$HEAD_LINE" != "-----BEGIN OPENSSH PRIVATE KEY-----" ] || [ "$TAIL_LINE" != "-----END OPENSSH PRIVATE KEY-----" ]; then
-            echo "❌ 还原文件不是 OpenSSH 私钥，请重新生成/编码（见下步骤 3）"
-            exit 1
+          # 2) 基本健诊（必须是 OpenSSH 私钥头尾）
+          HL="$(head -n1 ~/.ssh/match_key || true)"
+          TL="$(tail -n1 ~/.ssh/match_key || true)"
+          echo "Key head: $HL"
+          echo "Key tail: $TL"
+          if [ "$HL" != "-----BEGIN OPENSSH PRIVATE KEY-----" ] || [ "$TL" != "-----END OPENSSH PRIVATE KEY-----" ]; then
+            echo "❌ 还原文件不是 OpenSSH 私钥，请确认变量内容无误（首尾行要对）"; exit 1
           fi
-
-          # 3) 用 ssh-keygen 验证私钥可读
+          # 可读性校验
           if ! ssh-keygen -yf ~/.ssh/match_key >/dev/null 2>&1; then
-            echo "❌ ssh-keygen 无法读取私钥，格式仍异常。请按“步骤 3：重新生成 + 正确 base64”处理。"
-            exit 1
+            echo "❌ ssh-keygen 无法读取私钥，变量内容可能被破坏"; exit 1
           fi
 
-          # 4) 预热 GitHub host key
+          # 3) 预热 GitHub host key（多算法以兼容）
           ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null || true
 
-          # 5) 仅使用这把私钥
+          # 4) 强制仅用这把私钥
           export GIT_SSH_COMMAND='ssh -i ~/.ssh/match_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes'
 
-          # 6) 验证到 github.com 的 SSH 身份（出现欢迎提示即可）
+          # 5) 验证到 GitHub 的 SSH 身份（出现欢迎提示即可，不是错误）
           ssh -i ~/.ssh/match_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -T git@github.com || true
 
-          # 7) 仓库自检
+          # 6) 自检仓库访问
+          echo "▶ git ls-remote $MATCH_GIT_URL"
           git ls-remote "$MATCH_GIT_URL" >/dev/null
           echo "✅ match 证书库可访问"
 
