@@ -164,40 +164,49 @@ workflows:
           [ -n "$MATCH_GIT_URL" ] || { echo "❌ 缺少 MATCH_GIT_URL（示例：git@github.com:goodwillworld/ios-certs.git）"; exit 1; }
           echo "MATCH_GIT_URL=$MATCH_GIT_URL"
 
-          # 1) 从单行变量（包含 \n 字符）还原 OpenSSH 私钥为多行文件（用 python -c，避免 heredoc）
+          # 1) 从单行变量还原 OpenSSH 私钥：先把 \\n -> 换行，再把 \\ -> \
           if [ -z "$MATCH_SSH_PRIVATE_KEY_ESC" ]; then
             echo "❌ 缺少 MATCH_SSH_PRIVATE_KEY_ESC（单行、含 \\n 的私钥文本）"; exit 1
           fi
           mkdir -p ~/.ssh
-          python3 -c 'import os,sys; s=os.environ.get("MATCH_SSH_PRIVATE_KEY_ESC",""); s=s.replace("\r\n","\n").replace("\r","\n"); s=s.replace("\\n","\n"); open(os.path.expanduser("~/.ssh/match_key"),"w").write(s)'
+          python3 - <<'PY'
+          import os
+          esc=os.environ.get("MATCH_SSH_PRIVATE_KEY_ESC","")
+          # 规范行尾
+          esc=esc.replace('\r\n','\n').replace('\r','\n')
+          # 先把字面量 \n 还原成真实换行
+          esc=esc.replace('\\n','\n')
+          # 再把双反斜杠 \\ 还原成单反斜杠 \
+          esc=esc.replace('\\\\','\\')
+          out=os.path.expanduser('~/.ssh/match_key')
+          open(out,'w').write(esc)
+          PY
           chmod 600 ~/.ssh/match_key
 
-          # 2) 基本健诊（必须是 OpenSSH 私钥头尾）
+          # 2) 健诊：头尾+可读性
           HL="$(head -n1 ~/.ssh/match_key || true)"
           TL="$(tail -n1 ~/.ssh/match_key || true)"
+          SZ="$(wc -c < ~/.ssh/match_key || true)"
           echo "Key head: $HL"
           echo "Key tail: $TL"
+          echo "Key size: ${SZ} bytes"
           if [ "$HL" != "-----BEGIN OPENSSH PRIVATE KEY-----" ] || [ "$TL" != "-----END OPENSSH PRIVATE KEY-----" ]; then
-            echo "❌ 还原文件不是 OpenSSH 私钥，请确认变量内容无误（首尾行要对）"; exit 1
+            echo "❌ 还原文件不是 OpenSSH 私钥（首尾不符）"; exit 1
           fi
-          # 可读性校验
           if ! ssh-keygen -yf ~/.ssh/match_key >/dev/null 2>&1; then
-            echo "❌ ssh-keygen 无法读取私钥，变量内容可能被破坏"; exit 1
+            echo "❌ ssh-keygen 无法读取私钥；请检查变量是否被自动换行或被加了多余字符"; exit 1
           fi
 
-          # 3) 预热 GitHub host key（多算法以兼容）
+          # 3) 预热 host key + 只用这把钥
           ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null || true
-
-          # 4) 强制仅用这把私钥
           export GIT_SSH_COMMAND='ssh -i ~/.ssh/match_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes'
 
-          # 5) 验证到 GitHub 的 SSH 身份（出现欢迎提示即可）
+          # 4) 自检连通
           ssh -i ~/.ssh/match_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -T git@github.com || true
-
-          # 6) 自检仓库访问
           echo "▶ git ls-remote $MATCH_GIT_URL"
           git ls-remote "$MATCH_GIT_URL" >/dev/null
           echo "✅ match 证书库可访问"
+
 
 
       - name: 自检关键变量（不会泄露）
