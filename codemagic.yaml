@@ -161,25 +161,48 @@ workflows:
       - name: 配置 SSH 访问 match 证书库并自检在 match 之前配置 SSH，并自检访问证书库 
         script: |
           set -e
-          if [ -z "$MATCH_GIT_URL" ]; then
-            echo "❌ 缺少 MATCH_GIT_URL（建议：git@github.com:goodwillworld/ios-certs.git）"
-            exit 1
-          fi
-          mkdir -p ~/.ssh
-          if [ -n "$MATCH_SSH_PRIVATE_KEY" ]; then
-            echo "$MATCH_SSH_PRIVATE_KEY" > ~/.ssh/match_key
-            chmod 600 ~/.ssh/match_key
-            export GIT_SSH_COMMAND='ssh -i ~/.ssh/match_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes'
-          else
-            echo "❌ 缺少 MATCH_SSH_PRIVATE_KEY（Deploy Key 私钥全文）"
-            exit 1
-          fi
-          # 预热 known_hosts（GitHub；自建域名请替换）
-          ssh-keyscan -t rsa github.com >> ~/.ssh/known_hosts 2>/dev/null || true
+          [ -n "$MATCH_GIT_URL" ] || { echo "❌ 缺少 MATCH_GIT_URL"; exit 1; }
+          echo "MATCH_GIT_URL=$MATCH_GIT_URL"
 
-          echo "▶ 自检：git ls-remote $MATCH_GIT_URL"
+          mkdir -p ~/.ssh
+          # 1) 还原私钥（用 printf + macOS 的 /usr/bin/base64 -D 更稳）
+          if [ -z "$MATCH_SSH_PRIVATE_KEY_B64" ]; then
+            echo "❌ 缺少 MATCH_SSH_PRIVATE_KEY_B64（请把“私钥”的 base64 放到这个变量）"; exit 1
+          fi
+          printf '%s' "$MATCH_SSH_PRIVATE_KEY_B64" | /usr/bin/base64 -D > ~/.ssh/match_key || {
+            echo "❌ base64 解码失败，请确认是“私钥”的 base64（不是 .pub 公钥）"; exit 1;
+          }
+          chmod 600 ~/.ssh/match_key
+
+          # 2) 头尾检查（必须是 OpenSSH 私钥头尾）
+          HEAD_LINE="$(head -n1 ~/.ssh/match_key || true)"
+          TAIL_LINE="$(tail -n1 ~/.ssh/match_key || true)"
+          echo "Key head: $HEAD_LINE"
+          echo "Key tail: $TAIL_LINE"
+          if [ "$HEAD_LINE" != "-----BEGIN OPENSSH PRIVATE KEY-----" ] || [ "$TAIL_LINE" != "-----END OPENSSH PRIVATE KEY-----" ]; then
+            echo "❌ 还原文件不是 OpenSSH 私钥，请重新生成/编码（见下步骤 3）"
+            exit 1
+          fi
+
+          # 3) 用 ssh-keygen 验证私钥可读
+          if ! ssh-keygen -yf ~/.ssh/match_key >/dev/null 2>&1; then
+            echo "❌ ssh-keygen 无法读取私钥，格式仍异常。请按“步骤 3：重新生成 + 正确 base64”处理。"
+            exit 1
+          fi
+
+          # 4) 预热 GitHub host key
+          ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null || true
+
+          # 5) 仅使用这把私钥
+          export GIT_SSH_COMMAND='ssh -i ~/.ssh/match_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes'
+
+          # 6) 验证到 github.com 的 SSH 身份（出现欢迎提示即可）
+          ssh -i ~/.ssh/match_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -T git@github.com || true
+
+          # 7) 仓库自检
           git ls-remote "$MATCH_GIT_URL" >/dev/null
           echo "✅ match 证书库可访问"
+
 
       - name: 自检关键变量（不会泄露）
         script: |
