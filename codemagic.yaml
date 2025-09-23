@@ -246,16 +246,13 @@ workflows:
 
     publishing:
       app_store_connect:
-        api_key:
-          key_id: "UZ33M397NY"
-          issuer_id: "26e601c9-c2f0-497a-a9e1-39a426cecf9a"
-          key: |
-            -----BEGIN PRIVATE KEY-----
-            MIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQgTHFCUEmtmzuEaG/T
-            zD5C5EBtEBsuWf54ZxCbWmpD/lugCgYIKoZIzj0DAQehRANCAAS6nYsA0zoFzGbY
-            t9rYpOKdcq0hG8zmImfhjOct0m609Z/J4fOcoxeLd3LJr4DAo6Kk+PBeCFBvrxIl
-            j5J7JvfX
-            -----END PRIVATE KEY-----
+        api_key: |
+          -----BEGIN PRIVATE KEY-----
+          MIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQgTHFCUEmtmzuEaG/T
+          zD5C5EBtEBsuWf54ZxCbWmpD/lugCgYIKoZIzj0DAQehRANCAAS6nYsA0zoFzGbY
+          t9rYpOKdcq0hG8zmImfhjOct0m609Z/J4fOcoxeLd3LJr4DAo6Kk+PBeCFBvrxIl
+          j5J7JvfX
+          -----END PRIVATE KEY-----
+        key_id: "UZ33M397NY"
+        issuer_id: "26e601c9-c2f0-497a-a9e1-39a426cecf9a"
         submit_to_testflight: true
-        # 需要直接上架时再打开：
-        # submit_to_app_store: true
