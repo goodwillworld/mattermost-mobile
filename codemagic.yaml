@@ -175,44 +175,52 @@ workflows:
           check_var ASC_ISSUER_ID
           if [ -z "$ASC_PRIVATE_KEY" ]; then echo "❌ MISSING ASC_PRIVATE_KEY"; exit 1; else echo "✅ ASC_PRIVATE_KEY OK (hidden)"; fi
 
-      - name: 诊断并预先拉取 match 仓库（HTTPS+Token，升 fastlane）
+      - name: 诊断并预先拉取 match 仓库（HTTPS+Token，自动安装 fastlane）
         script: |
           set -e
-          # 0) 基础环境
-          [ -n "$GITHUB_PAT" ] || { echo "❌ 缺少 GITHUB_PAT"; exit 1; }
-          export MATCH_GIT_URL="https://${GITHUB_PAT}@github.com/goodwillworld/ios-certs.git"
-          export SIGH_GIT_URL="$MATCH_GIT_URL"              # 一些 action 读这个
-          export MATCH_USERNAME="${MATCH_USERNAME:?缺少 MATCH_USERNAME(Apple ID)}"
-          export MATCH_PASSWORD="${MATCH_PASSWORD:?缺少 MATCH_PASSWORD(match加密口令)}"
-          export FASTLANE_TEAM_ID="${FASTLANE_TEAM_ID:?缺少 FASTLANE_TEAM_ID}"
 
-          # 1) 升级 fastlane（日志提示 2.228.0）
-          bundle update fastlane
-          bundle exec fastlane --version
+          # 0) 基础变量检查（这几个必须有）
+          : "${MATCH_USERNAME:?缺少 MATCH_USERNAME(Apple ID)}"
+          : "${MATCH_PASSWORD:?缺少 MATCH_PASSWORD(match加密口令)}"
+          : "${FASTLANE_TEAM_ID:?缺少 FASTLANE_TEAM_ID}"
+          : "${MATCH_APP_IDENTIFIER:?缺少 MATCH_APP_IDENTIFIER}"
 
-          # 2) 打印 Matchfile 与 git_url 线索（看看是否被硬编码覆盖）
-          if [ -f fastlane/Matchfile ]; then
-            echo "----- fastlane/Matchfile -----"
-            sed -n '1,200p' fastlane/Matchfile || true
-          else
-            echo "ℹ️ 未找到 fastlane/Matchfile"
+          # 1) 证书库地址（优先用已有的 MATCH_GIT_URL；没有就用 GITHUB_PAT 组装 HTTPS 地址）
+          if [ -z "${MATCH_GIT_URL:-}" ]; then
+            : "${GITHUB_PAT:?缺少 GITHUB_PAT 或 MATCH_GIT_URL}"
+            export MATCH_GIT_URL="https://${GITHUB_PAT}@github.com/goodwillworld/ios-certs.git"
           fi
-          echo "----- git_url references in repo -----"
-          (grep -Rn "git_url" fastlane || true) || true
+          export SIGH_GIT_URL="$MATCH_GIT_URL"   # 防止被 Matchfile 覆盖
 
-          # 3) 预检 token 能否访问
+          echo "MATCH_GIT_URL set (token masked)"
+
+          # 2) 自检：证书库可访问（用 HTTPS+Token）
           git -c credential.helper= ls-remote "$MATCH_GIT_URL" >/dev/null
-          echo "✅ HTTPS+Token 访问证书库 OK：$MATCH_GIT_URL"
+          echo "✅ match 证书库可访问（HTTPS+Token）"
 
-          # 4) 用我们指定的参数先跑一次 match（只读，不生成新证书）
-          #    这样即使 lane 里有别的逻辑，也已经把 repo 拉下来了
-          bundle exec fastlane run match \
+          # 3) 安装 fastlane（按需）
+          if [ -f Gemfile ] && grep -qi 'fastlane' Gemfile; then
+            echo "▶ Gemfile 检测到 fastlane，使用 bundler"
+            gem install bundler --no-document
+            bundle install
+            FASTLANE="bundle exec fastlane"
+          else
+            echo "▶ 未检测到 Gemfile 中的 fastlane，直接安装 gem"
+            gem install fastlane -v 2.228.0 --no-document || gem install fastlane --no-document
+            FASTLANE="fastlane"
+          fi
+          $FASTLANE --version
+
+          # 4) 预拉取并解密证书（readonly=true 不会改动远端）
+          #    若你的证书库已经用 match 初始化过，这一步会用 MATCH_PASSWORD 解密
+          $FASTLANE run match \
             type:"appstore" \
             readonly:"true" \
             git_url:"$MATCH_GIT_URL" \
             app_identifier:"$MATCH_APP_IDENTIFIER" \
             team_id:"$FASTLANE_TEAM_ID" \
             verbose:true
+
 
       # - name: 生成 App Store Connect API Key JSON（供 publishing 使用）
             #   script: |
