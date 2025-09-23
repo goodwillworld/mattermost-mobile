@@ -161,6 +161,67 @@ workflows:
       - name: 配置证书库（HTTPS + Token）并自检
         script: "set -e; if [ -z \"${GITHUB_PAT:-}\" ]; then echo '❌ 缺少 GITHUB_PAT'; exit 1; fi; export MATCH_GIT_URL=\"https://${GITHUB_PAT}@github.com/goodwillworld/ios-certs.git\"; echo 'MATCH_GIT_URL set (token masked)'; git -c credential.helper= ls-remote \"$MATCH_GIT_URL\" >/dev/null; echo '✅ match 证书库可访问（HTTPS+Token）'; export SIGH_GIT_URL=\"$MATCH_GIT_URL\""
 
+      - name: 首次初始化签名（仅当证书库为空时执行；用 ASC API Key）
+        script: |
+          set -e
+          : "${MATCH_GIT_URL:?缺少 MATCH_GIT_URL}"
+          : "${FASTLANE_TEAM_ID:?缺少 FASTLANE_TEAM_ID}"
+          : "${MATCH_APP_IDENTIFIER:?缺少 MATCH_APP_IDENTIFIER（可逗号分隔多个ID）}"
+          : "${MATCH_PASSWORD:?缺少 MATCH_PASSWORD（match 加密口令）}"
+          : "${ASC_KEY_ID:?缺少 ASC_KEY_ID}"
+          : "${ASC_ISSUER_ID:?缺少 ASC_ISSUER_ID}"
+          : "${ASC_PRIVATE_KEY:?缺少 ASC_PRIVATE_KEY}"
+
+          # 证书库是否为空
+          if [ "$(git -c credential.helper= ls-remote --heads "$MATCH_GIT_URL" | wc -l | tr -d ' ')" -gt 0 ]; then
+            echo "ℹ️ 证书库已有分支，跳过初始化"; exit 0
+          fi
+          echo "🆕 空仓库：执行首轮初始化（创建证书/描述文件并 push）"
+
+          # fastlane：有 Gemfile 用 bundler，否则用 gem
+          if [ -f Gemfile ] && grep -qi 'fastlane' Gemfile; then
+            gem install bundler --no-document
+            bundle install
+            FL="bundle exec fastlane"
+          else
+            gem install fastlane -v 2.228.0 --no-document || gem install fastlane --no-document
+            FL="fastlane"
+          fi
+          $FL --version
+
+          # ASC API Key JSON
+          cat > asc_api_key.json <<EOF
+          {
+            "key_id":    "${ASC_KEY_ID}",
+            "issuer_id": "${ASC_ISSUER_ID}",
+            "key":       "${ASC_PRIVATE_KEY}",
+            "in_house":  false
+          }
+          EOF
+
+          # 临时 keychain，避免交互
+          KEYCHAIN_PWD="${KEYCHAIN_PWD:-$(uuidgen)}"
+          $FL run create_keychain name:"cm_tmp" password:"$KEYCHAIN_PWD" default_keychain:true unlock:true timeout:3600
+
+          # git 用户（用于首次提交）
+          git config --global user.email "codemagic@local"
+          git config --global user.name  "Codemagic CI"
+
+          # 首轮创建（readonly:false）
+          $FL run match \
+            type:"appstore" \
+            readonly:"false" \
+            git_url:"$MATCH_GIT_URL" \
+            app_identifier:"$MATCH_APP_IDENTIFIER" \
+            team_id:"$FASTLANE_TEAM_ID" \
+            api_key_path:"asc_api_key.json" \
+            keychain_name:"cm_tmp" \
+            keychain_password:"$KEYCHAIN_PWD" \
+            verbose:true
+
+          echo "✅ 初始化完成：之后任务可改回 readonly:true"
+
+
       - name: 自检关键变量（不会泄露）
         script: |
           set -e
