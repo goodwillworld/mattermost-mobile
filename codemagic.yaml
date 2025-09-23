@@ -159,20 +159,13 @@ workflows:
 
       # —— 关键：在 match 之前配置 SSH，并自检访问证书库 ——
       - name: 配置 SSH 访问 match 证书库并自检在 match 之前配置 SSH，并自检访问证书库 
-        script: |
-          set -e
-          # 1) 校验并设置 URL（不要打印 token）
-          if [ -z "$GITHUB_PAT" ]; then
-            echo "❌ 缺少 GITHUB_PAT"; exit 1;
-          fi
-          export MATCH_GIT_URL="https://${GITHUB_PAT}@github.com/goodwillworld/ios-certs.git"
-          echo "MATCH_GIT_URL set (token masked)"
-
-          # 2) 自检访问权限（禁用任何凭据助手，避免环境干扰）
-          git -c credential.helper= ls-remote "$MATCH_GIT_URL" >/dev/null
-          echo "✅ match 证书库可访问（HTTPS+Token）"
-
-          # 3) 避免 Matchfile 覆盖 git_url
+        script: >
+          set -e; 
+          if [ -z "${GITHUB_PAT:-}" ]; then echo "❌ 缺少 GITHUB_PAT"; exit 1; fi; 
+          export MATCH_GIT_URL="https://${GITHUB_PAT}@github.com/goodwillworld/ios-certs.git"; 
+          echo "MATCH_GIT_URL set (token masked)"; 
+          git -c credential.helper= ls-remote "$MATCH_GIT_URL" >/dev/null; 
+          echo "✅ match 证书库可访问（HTTPS+Token）"; 
           export SIGH_GIT_URL="$MATCH_GIT_URL"
 
 
