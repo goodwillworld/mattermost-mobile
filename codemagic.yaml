@@ -164,19 +164,12 @@ workflows:
           [ -n "$MATCH_GIT_URL" ] || { echo "❌ 缺少 MATCH_GIT_URL（示例：git@github.com:goodwillworld/ios-certs.git）"; exit 1; }
           echo "MATCH_GIT_URL=$MATCH_GIT_URL"
 
-          # 1) 从单行变量（包含 \n 字符）还原 OpenSSH 私钥为多行文件
+          # 1) 从单行变量（包含 \n 字符）还原 OpenSSH 私钥为多行文件（用 python -c，避免 heredoc）
           if [ -z "$MATCH_SSH_PRIVATE_KEY_ESC" ]; then
             echo "❌ 缺少 MATCH_SSH_PRIVATE_KEY_ESC（单行、含 \\n 的私钥文本）"; exit 1
           fi
           mkdir -p ~/.ssh
-          printf '%s' "$MATCH_SSH_PRIVATE_KEY_ESC" | python3 - <<'PY'
-      import sys, os
-      s=sys.stdin.read()
-      # 规范行尾，并把字面量 \n 转成真实换行
-      s=s.replace('\r\n','\n').replace('\r','\n').replace('\\n','\n')
-      out=os.path.expanduser('~/.ssh/match_key')
-      open(out,'w').write(s)
-      PY
+          python3 -c 'import os,sys; s=os.environ.get("MATCH_SSH_PRIVATE_KEY_ESC",""); s=s.replace("\r\n","\n").replace("\r","\n"); s=s.replace("\\n","\n"); open(os.path.expanduser("~/.ssh/match_key"),"w").write(s)'
           chmod 600 ~/.ssh/match_key
 
           # 2) 基本健诊（必须是 OpenSSH 私钥头尾）
@@ -198,7 +191,7 @@ workflows:
           # 4) 强制仅用这把私钥
           export GIT_SSH_COMMAND='ssh -i ~/.ssh/match_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes'
 
-          # 5) 验证到 GitHub 的 SSH 身份（出现欢迎提示即可，不是错误）
+          # 5) 验证到 GitHub 的 SSH 身份（出现欢迎提示即可）
           ssh -i ~/.ssh/match_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -T git@github.com || true
 
           # 6) 自检仓库访问
