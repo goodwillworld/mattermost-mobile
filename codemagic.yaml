@@ -158,15 +158,9 @@ workflows:
           cd ios && bundle exec pod install --repo-update && cd ..
 
       # —— 关键：在 match 之前配置 SSH，并自检访问证书库 ——
-      - name: 配置 SSH 访问 match 证书库并自检在 match 之前配置 SSH，并自检访问证书库 
-        script: >
-          set -e; 
-          if [ -z "${GITHUB_PAT:-}" ]; then echo "❌ 缺少 GITHUB_PAT"; exit 1; fi; 
-          export MATCH_GIT_URL="https://${GITHUB_PAT}@github.com/goodwillworld/ios-certs.git"; 
-          echo "MATCH_GIT_URL set (token masked)"; 
-          git -c credential.helper= ls-remote "$MATCH_GIT_URL" >/dev/null; 
-          echo "✅ match 证书库可访问（HTTPS+Token）"; 
-          export SIGH_GIT_URL="$MATCH_GIT_URL"
+      - name: 配置证书库（HTTPS + Token）并自检
+        script: "set -e; if [ -z \"${GITHUB_PAT:-}\" ]; then echo '❌ 缺少 GITHUB_PAT'; exit 1; fi; export MATCH_GIT_URL=\"https://${GITHUB_PAT}@github.com/goodwillworld/ios-certs.git\"; echo 'MATCH_GIT_URL set (token masked)'; git -c credential.helper= ls-remote \"$MATCH_GIT_URL\" >/dev/null; echo '✅ match 证书库可访问（HTTPS+Token）'; export SIGH_GIT_URL=\"$MATCH_GIT_URL\""
+
 
 
             - name: 自检关键变量（不会泄露）
