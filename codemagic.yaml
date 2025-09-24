@@ -116,25 +116,40 @@ workflows:
         ${RBENV_VERSION}\" \\\nGEM_HOME=\"$HOME/.gem\" GEM_PATH=\"$HOME/.gem\" HOME=\"\
         $HOME\" LANG=\"${LANG:-en_US.UTF-8}\" \\\npod _1.16.1_ install --repo-update\n\
         cd ..\n"
+
     - name: 🔧 Patch Pods project (TurboLogIOSNative module.modulemap hotfix)
-      script: "set -e\ncd ios\nruby - <<'RUBY'\n  require 'xcodeproj'\n  proj = Xcodeproj::Project.open('Pods/Pods.xcodeproj')\n\
-        \  targets = proj.targets.select { |t| t.name == 'TurboLogIOSNative' }\n \
-        \ if targets.empty?\n    puts \"ℹ️ Target TurboLogIOSNative not found, skipping\"\
-        \n  else\n    targets.each do |t|\n      # Remove any *.modulemap accidentally\
-        \ added to Compile Sources\n      if t.respond_to?(:source_build_phase) &&\
-        \ t.source_build_phase\n        t.source_build_phase.files_references.select\
-        \ { |fr|\n          (fr.path || '').end_with?('.modulemap')\n        }.each\
-        \ { |fr| t.source_build_phase.remove_file_reference(fr) }\n      end\n   \
-        \   if t.respond_to?(:sources_build_phase) && t.sources_build_phase\n    \
-        \    t.sources_build_phase.files_references.select { |fr|\n          (fr.path\
-        \ || '').end_with?('.modulemap')\n        }.each { |fr| t.sources_build_phase.remove_file_reference(fr)\
-        \ }\n      end\n      # Harden build settings so modulemap is not treated\
-        \ as a source file\n      t.build_configurations.each do |cfg|\n        cfg.build_settings['EXCLUDED_SOURCE_FILE_NAMES']\
-        \ = '*/module.modulemap *.modulemap'\n        cfg.build_settings['MODULEMAP_FILE']\
-        \ = '$(SRCROOT)/TurboLogIOSNative/Sources/TurboLogSwift/module.modulemap'\n\
-        \        cfg.build_settings['DEFINES_MODULE'] = 'YES'\n      end\n    end\n\
-        \    proj.save\n    puts \"✅ Patched TurboLogIOSNative in Pods.xcodeproj\"\
-        \n  end\nRUBY\ncd ..\n"
+      script: |
+        set -euo pipefail
+        cd ios
+        ruby - <<'RUBY'
+          require 'xcodeproj'
+          proj = Xcodeproj::Project.open('Pods/Pods.xcodeproj')
+          targets = proj.targets.select { |t| t.name == 'TurboLogIOSNative' }
+          if targets.empty?
+            puts "ℹ️ Target TurboLogIOSNative not found, skipping"
+          else
+            targets.each do |t|
+              # 1) 从 Compile Sources 移除任何 *.modulemap（兼容不同 fastlane/xcodeproj 版本：两个方法都尝试）
+              [t.respond_to?(:source_build_phase) ? t.source_build_phase : nil,
+              t.respond_to?(:sources_build_phase) ? t.sources_build_phase : nil].compact.each do |phase|
+                phase.files_references.select { |fr|
+                  (fr.path || '').end_with?('.modulemap')
+                }.each { |fr| phase.remove_file_reference(fr) }
+              end
+              # 2) 加固编译设置，避免再次被当“源码”
+              t.build_configurations.each do |cfg|
+                cfg.build_settings['EXCLUDED_SOURCE_FILE_NAMES'] = '*/module.modulemap *.modulemap'
+                cfg.build_settings['MODULEMAP_FILE'] = '$(SRCROOT)/TurboLogIOSNative/Sources/TurboLogSwift/module.modulemap'
+                cfg.build_settings['DEFINES_MODULE'] = 'YES'
+              end
+            end
+            proj.save
+            puts "✅ Patched TurboLogIOSNative in Pods.xcodeproj"
+          end
+        RUBY
+        cd ..
+
+
     - name: 配置证书库（HTTPS + Token）并自检
       script: set -e; if [ -z "${GITHUB_PAT:-}" ]; then echo '❌ 缺少 GITHUB_PAT'; exit
         1; fi; export MATCH_GIT_URL="https://${GITHUB_PAT}@github.com/goodwillworld/ios-certs.git";
