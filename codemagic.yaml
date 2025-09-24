@@ -6,7 +6,7 @@ workflows:
     instance_type: linux_x2
     environment:
       android_signing:
-        - jboth_android_keystore_ref   # Team settings → Code signing identities 的引用名
+        - jboth_android_keystore_ref
       groups:
         - mm_common
         - jboth_client
@@ -104,9 +104,9 @@ workflows:
       vars:
         BUILD_FOR_RELEASE: "true"
         REPLACE_ASSETS: "true"
-        # 必备（以 Secret 形式设置）：
+        # 必备（Secret）：
         # FASTLANE_TEAM_ID、MATCH_USERNAME、MATCH_PASSWORD、
-        # MATCH_APP_IDENTIFIER（逗号分隔，如：com.jboth.mine,com.jboth.mine.MattermostShare,com.jboth.mine.NotificationService）、
+        # MATCH_APP_IDENTIFIER（逗号分隔：com.jboth.mine,com.jboth.mine.MattermostShare,com.jboth.mine.NotificationService）、
         # MATCH_TYPE=appstore、GITHUB_PAT、
         # ASC_KEY_ID、ASC_ISSUER_ID、ASC_PRIVATE_KEY
 
@@ -149,22 +149,17 @@ workflows:
       - name: Ruby/Fastlane + CocoaPods（用固定的 1.16.1 执行）
         script: |
           set -e
-
-          # ① 强制 rbenv 使用已安装 Ruby（覆盖 .ruby-version 的 3.2.0）
+          # 强制 rbenv 使用已装 Ruby（覆盖 .ruby-version 的 3.2.0），并临时屏蔽 .ruby-version
           if command -v rbenv >/dev/null 2>&1; then
             RB_INST="$(rbenv versions --bare | grep -E '^[0-9]+\.[0-9]+' | tail -1 || true)"
             export RBENV_VERSION="${RB_INST:-system}"
             echo "Using rbenv Ruby: ${RBENV_VERSION}"
           fi
           ruby -v || true
-
-          # ② 临时屏蔽 .ruby-version，防止子进程再读 3.2.0
           if [ -f .ruby-version ]; then
             mv .ruby-version .ruby-version.bak
             trap 'mv .ruby-version.bak .ruby-version 2>/dev/null || true' EXIT
           fi
-
-          # ③ 使用 $HOME/.gem 的 CocoaPods 1.16.1（不走 bundler）
           cd ios
           RBENV_VERSION="${RBENV_VERSION}" \
           GEM_HOME="$HOME/.gem" GEM_PATH="$HOME/.gem" HOME="$HOME" LANG="${LANG:-en_US.UTF-8}" \
@@ -187,61 +182,6 @@ workflows:
           check_var ASC_KEY_ID
           check_var ASC_ISSUER_ID
           if [ -z "$ASC_PRIVATE_KEY" ]; then echo "❌ MISSING ASC_PRIVATE_KEY"; exit 1; else echo "✅ ASC_PRIVATE_KEY OK (hidden)"; fi
-
-      - name: 若缺失则创建 App ID（使用 ASC API Key）
-        script: |
-          set -e
-          : "${ASC_KEY_ID:?缺少 ASC_KEY_ID}"
-          : "${ASC_ISSUER_ID:?缺少 ASC_ISSUER_ID}"
-          : "${ASC_PRIVATE_KEY:?缺少 ASC_PRIVATE_KEY}"
-          : "${FASTLANE_TEAM_ID:?缺少 FASTLANE_TEAM_ID}"
-          : "${MATCH_APP_IDENTIFIER:?缺少 MATCH_APP_IDENTIFIER（逗号分隔）}"
-
-          # 安装/选择 fastlane
-          if [ -f Gemfile ] && grep -qi 'fastlane' Gemfile; then
-            gem install bundler --no-document
-            bundle install
-            FL="bundle exec fastlane"
-          else
-            gem install fastlane -v 2.228.0 --no-document || gem install fastlane --no-document
-            FL="fastlane"
-          fi
-          $FL --version
-
-          # 生成 ASC API Key JSON（安全转义）
-          python3 - <<'PY'
-          import os, json
-          data={
-            "key_id": os.environ["ASC_KEY_ID"].strip(),
-            "issuer_id": os.environ["ASC_ISSUER_ID"].strip(),
-            "key": os.environ["ASC_PRIVATE_KEY"].replace("\r\n","\n").replace("\r","\n"),
-            "in_house": False
-          }
-          open("asc_api_key.json","w").write(json.dumps(data))
-          PY
-          python3 -m json.tool asc_api_key.json >/dev/null && echo "✅ asc_api_key.json OK"
-
-          # 从 MATCH_APP_IDENTIFIER 读取并逐个创建（已存在则跳过）
-          APP_NAME_CN="${APP_NAME:-加步协同}"
-          IFS=',' read -r -a BIDS <<< "$MATCH_APP_IDENTIFIER"
-          for BID in "${BIDS[@]}"; do
-            BID_TRIM="$(echo "$BID" | tr -d '[:space:]')"
-            case "$BID_TRIM" in
-              *.MattermostShare) NAME="${APP_NAME_CN} Share Extension" ;;
-              *.NotificationService) NAME="${APP_NAME_CN} Notification Service" ;;
-              *) NAME="$APP_NAME_CN" ;;
-            esac
-            echo "▶ 确保 App ID 存在：$BID_TRIM  ($NAME)"
-            $FL run produce \
-              app_identifier:"$BID_TRIM" \
-              app_name:"$NAME" \
-              skip_itc:"true" \
-              team_id:"$FASTLANE_TEAM_ID" \
-              api_key_path:"asc_api_key.json" \
-              run_if:"true" \
-              verbose:true || true
-          done
-          echo "✅ App IDs ensured"
 
       - name: 首次初始化签名（仅当证书库为空时执行）
         script: |
@@ -292,7 +232,7 @@ workflows:
           git config --global user.email "codemagic@local"
           git config --global user.name  "Codemagic CI"
 
-          # 首轮创建（readonly:false）
+          # 首轮创建（readonly:false）— 现在 Apple Dev Portal 里已有 3 个 App ID
           $FL run match \
             type:"appstore" \
             readonly:"false" \
