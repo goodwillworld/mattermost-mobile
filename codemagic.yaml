@@ -168,65 +168,61 @@ workflows:
           pod _1.16.1_ install --repo-update
           cd ..
 
-      - name: 🔧 Patch Pods project for TurboLogIOSNative (CI hotfix)
+      - name: 🔧 Patch Pods project (remove any .modulemap from Compile Sources)
         script: |
           set -e
           cd ios
           ruby - <<'RUBY'
             require 'xcodeproj'
-
             proj = Xcodeproj::Project.open('Pods/Pods.xcodeproj')
-            target = proj.targets.find { |t| t.name == 'TurboLogIOSNative' }
+            removed_total = 0
 
-            if target
-              # 兼容不同版本的 xcodeproj：优先用单数，其次用复数
-              phase = nil
-              phase = target.source_build_phase if target.respond_to?(:source_build_phase)
-              phase ||= target.sources_build_phase if target.respond_to?(:sources_build_phase)
-
-              if phase
-                # 拿到文件引用（不同版本可能没有 files_references，就从 files -> file_ref 取）
-                file_refs =
-                  if phase.respond_to?(:files_references)
-                    phase.files_references.compact
-                  else
-                    phase.files.compact.map(&:file_ref).compact
-                  end
-
-                # 匹配可能的 modulemap 路径
-                matches = file_refs.select do |fr|
-                  p = (fr.path || '')
-                  p.end_with?('TurboLogSwift/module.modulemap') ||
-                  p.end_with?('Sources/TurboLogSwift/module.modulemap')
-                end
-
-                removed = 0
-                matches.each do |fr|
-                  # 兼容不同 API：有 remove_file_reference 就用，没有就删除 build file
+            proj.targets.each do |t|
+              next unless t.name == 'TurboLogIOSNative' # 只动这个目标，避免误伤
+              # 找到 Sources build phase（兼容不同 xcodeproj 版本）
+              phases = []
+              phases << (t.respond_to?(:source_build_phase) ? t.source_build_phase : nil)
+              phases << (t.respond_to?(:sources_build_phase) ? t.sources_build_phase : nil)
+              phases += t.build_phases.select { |p| p.display_name.to_s =~ /Sources/i }
+              phases.compact.uniq.each do |phase|
+                files = if phase.respond_to?(:files_references)
+                          phase.files_references.compact
+                        else
+                          phase.files.compact.map(&:file_ref).compact
+                        end
+                files.select { |fr| (fr.path || '') =~ /\.modulemap$/ }.each do |fr|
                   if phase.respond_to?(:remove_file_reference)
                     phase.remove_file_reference(fr)
                   else
                     phase.files.select { |bf| bf.file_ref == fr }.each { |bf| bf.remove_from_project }
                   end
-                  removed += 1
+                  removed_total += 1
                 end
-
-                # 显式设置 MODULEMAP_FILE，避免找不到
-                candidate = '$(SRCROOT)/TurboLogIOSNative/Sources/TurboLogSwift/module.modulemap'
-                target.build_configurations.each do |cfg|
-                  cfg.build_settings['MODULEMAP_FILE'] ||= candidate
-                end
-
-                proj.save
-                puts "✅ Patched TurboLogIOSNative (removed #{removed} module.modulemap from Compile Sources)"
-              else
-                puts "ℹ️ 没找到 Sources Build Phase，跳过"
               end
-            else
-              puts "ℹ️ Target 'TurboLogIOSNative' not found; skip patch"
+
+              # 显式声明 MODULEMAP_FILE，避免找不到
+              candidate = '$(SRCROOT)/TurboLogIOSNative/Sources/TurboLogSwift/module.modulemap'
+              t.build_configurations.each { |cfg| cfg.build_settings['MODULEMAP_FILE'] ||= candidate }
             end
-          RUBY
+
+            proj.save
+            puts "✅ Removed #{removed_total} *.modulemap from Compile Sources in TurboLogIOSNative"
+            RUBY
           cd ..
+
+      - name: 🔄 Force export_method to app-store (patch Fastfile)
+        script: |
+          set -e
+          if [ -f fastlane/Fastfile ]; then
+            # 1) 直接把 'ad-hoc' 改成 'app-store'
+            sed -i.bak "s/export_method:[[:space:]]*['\"]ad-hoc['\"]/export_method: 'app-store'/" fastlane/Fastfile
+            # 2) 如果仓库使用变量或没有明确设置，则追加一层兜底（可多次安全执行）
+            if ! grep -q "export_method: 'app-store'" fastlane/Fastfile; then
+              echo "⚠️ 未在 Fastfile 中找到明确的 export_method，继续用环境变量兜底"
+            fi
+          fi
+          # 兜底：即使 Fastfile 没被命中修改，也用环境变量覆盖
+          export GYM_EXPORT_METHOD=app-store
 
 
       - name: 配置证书库（HTTPS + Token）并自检
