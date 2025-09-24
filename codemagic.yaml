@@ -121,33 +121,53 @@ workflows:
       script: |
         set -euo pipefail
         cd ios
-        ruby - <<'RUBY'
-          require 'xcodeproj'
-          proj = Xcodeproj::Project.open('Pods/Pods.xcodeproj')
-          targets = proj.targets.select { |t| t.name == 'TurboLogIOSNative' }
-          if targets.empty?
-            puts "ℹ️ Target TurboLogIOSNative not found, skipping"
-          else
-            targets.each do |t|
-              # 1) 从 Compile Sources 移除任何 *.modulemap（兼容不同 fastlane/xcodeproj 版本：两个方法都尝试）
-              [t.respond_to?(:source_build_phase) ? t.source_build_phase : nil,
-              t.respond_to?(:sources_build_phase) ? t.sources_build_phase : nil].compact.each do |phase|
-                phase.files_references.select { |fr|
-                  (fr.path || '').end_with?('.modulemap')
-                }.each { |fr| phase.remove_file_reference(fr) }
-              end
-              # 2) 加固编译设置，避免再次被当“源码”
-              t.build_configurations.each do |cfg|
-                cfg.build_settings['EXCLUDED_SOURCE_FILE_NAMES'] = '*/module.modulemap *.modulemap'
-                cfg.build_settings['MODULEMAP_FILE'] = '$(SRCROOT)/TurboLogIOSNative/Sources/TurboLogSwift/module.modulemap'
-                cfg.build_settings['DEFINES_MODULE'] = 'YES'
+        cat > patch_turblog.rb <<'RUBY'
+        require 'xcodeproj'
+        pods_proj_path = 'Pods/Pods.xcodeproj'
+        proj = Xcodeproj::Project.open(pods_proj_path)
+
+        changed = false
+        targets = proj.targets.select { |t| t.name == 'TurboLogIOSNative' }
+        if targets.empty?
+          puts "ℹ️ Target TurboLogIOSNative not found, skipping"
+        else
+          targets.each do |t|
+            # 1) 从 Sources 阶段移除任何 *.modulemap
+            phases = []
+            phases << t.source_build_phase if t.respond_to?(:source_build_phase)
+            phases << t.sources_build_phase if t.respond_to?(:sources_build_phase)
+            phases.compact.each do |phase|
+              phase.files.each do |bf|
+                fr = bf.file_ref
+                next unless fr && fr.path && fr.path.end_with?('.modulemap')
+                phase.remove_file_reference(fr)
+                changed = true
+                puts "🧹 Removed #{fr.path} from Compile Sources of #{t.name}"
               end
             end
-            proj.save
-            puts "✅ Patched TurboLogIOSNative in Pods.xcodeproj"
+
+            # 2) 防御性设置，避免再次被当作源码处理
+            t.build_configurations.each do |cfg|
+              cfg.build_settings['EXCLUDED_SOURCE_FILE_NAMES'] = '*/module.modulemap *.modulemap'
+              cfg.build_settings['DEFINES_MODULE'] = 'YES'
+              # 提示 Xcode 这就是该 Pod 的 modulemap 路径（不会去编译它）
+              cfg.build_settings['MODULEMAP_FILE'] = '$(SRCROOT)/TurboLogIOSNative/Sources/TurboLogSwift/module.modulemap'
+            end
           end
+        end
+
+        if changed
+          proj.save
+          puts "✅ Patched TurboLogIOSNative in Pods.xcodeproj"
+        else
+          puts "ℹ️ No changes needed"
+        end
         RUBY
+
+        # 用 CocoaPods 自带的 xcodeproj gem 执行
+        ruby patch_turblog.rb
         cd ..
+
 
     - name: 配置证书库（HTTPS + Token）并自检
       script: set -e; if [ -z "${GITHUB_PAT:-}" ]; then echo '❌ 缺少 GITHUB_PAT'; exit
@@ -231,6 +251,16 @@ workflows:
         \ \\\n  team_id:\"$FASTLANE_TEAM_ID\" \\\n  api_key_path:\"asc_api_key.json\"\
         \ \\\n  keychain_name:\"cm_tmp\" \\\n  keychain_password:\"$KEYCHAIN_PWD\"\
         \ \\\n  verbose:true\n\necho \"✅ 初始化完成：后续 match 可只读\"\n"
+    
+    - name: 统一导出方式为 app-store（避免签名不匹配提示）
+      script: |
+        set -e
+        export GYM_EXPORT_METHOD=app-store
+        export SIGH_PROFILE_TYPE=app-store
+        echo "GYM_EXPORT_METHOD=$GYM_EXPORT_METHOD"
+        echo "SIGH_PROFILE_TYPE=$SIGH_PROFILE_TYPE"
+
+
     - name: 构建 iOS（使用仓库 lane）
       script: 'set -e
 
