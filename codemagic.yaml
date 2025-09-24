@@ -172,25 +172,30 @@ workflows:
         script: |
           set -e
           cd ios
-          ruby - <<'RUBY'
+
+          # 写入临时 Ruby 脚本（避免 here-doc 缩进问题）
+          cat > /tmp/patch_turblog.rb <<'RB'
             require 'xcodeproj'
             proj = Xcodeproj::Project.open('Pods/Pods.xcodeproj')
             removed_total = 0
 
             proj.targets.each do |t|
-              next unless t.name == 'TurboLogIOSNative' # 只动这个目标，避免误伤
-              # 找到 Sources build phase（兼容不同 xcodeproj 版本）
+              next unless t.name == 'TurboLogIOSNative'
+
+              # 兼容不同 xcodeproj 版本：单数/复数/遍历
               phases = []
               phases << (t.respond_to?(:source_build_phase) ? t.source_build_phase : nil)
               phases << (t.respond_to?(:sources_build_phase) ? t.sources_build_phase : nil)
               phases += t.build_phases.select { |p| p.display_name.to_s =~ /Sources/i }
               phases.compact.uniq.each do |phase|
-                files = if phase.respond_to?(:files_references)
-                          phase.files_references.compact
-                        else
-                          phase.files.compact.map(&:file_ref).compact
-                        end
-                files.select { |fr| (fr.path || '') =~ /\.modulemap$/ }.each do |fr|
+                file_refs =
+                  if phase.respond_to?(:files_references)
+                    phase.files_references.compact
+                  else
+                    phase.files.compact.map(&:file_ref).compact
+                  end
+
+                file_refs.select { |fr| (fr.path || '') =~ /\.modulemap$/ }.each do |fr|
                   if phase.respond_to?(:remove_file_reference)
                     phase.remove_file_reference(fr)
                   else
@@ -200,28 +205,25 @@ workflows:
                 end
               end
 
-              # 显式声明 MODULEMAP_FILE，避免找不到
+              # 明确 MODULEMAP_FILE，避免找不到
               candidate = '$(SRCROOT)/TurboLogIOSNative/Sources/TurboLogSwift/module.modulemap'
               t.build_configurations.each { |cfg| cfg.build_settings['MODULEMAP_FILE'] ||= candidate }
             end
 
             proj.save
             puts "✅ Removed #{removed_total} *.modulemap from Compile Sources in TurboLogIOSNative"
-            RUBY
+          RB
+
+          ruby /tmp/patch_turblog.rb
           cd ..
 
-      - name: 🔄 Force export_method to app-store (patch Fastfile)
+
+      - name: 🔄 Force export_method to app-store (Fastfile patch + env)
         script: |
           set -e
           if [ -f fastlane/Fastfile ]; then
-            # 1) 直接把 'ad-hoc' 改成 'app-store'
-            sed -i.bak "s/export_method:[[:space:]]*['\"]ad-hoc['\"]/export_method: 'app-store'/" fastlane/Fastfile
-            # 2) 如果仓库使用变量或没有明确设置，则追加一层兜底（可多次安全执行）
-            if ! grep -q "export_method: 'app-store'" fastlane/Fastfile; then
-              echo "⚠️ 未在 Fastfile 中找到明确的 export_method，继续用环境变量兜底"
-            fi
+            sed -i.bak "s/export_method:[[:space:]]*['\"]ad-hoc['\"]/export_method: 'app-store'/" fastlane/Fastfile || true
           fi
-          # 兜底：即使 Fastfile 没被命中修改，也用环境变量覆盖
           export GYM_EXPORT_METHOD=app-store
 
 
