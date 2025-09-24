@@ -4,7 +4,7 @@ workflows:
     max_build_duration: 120
     environment:
       vars:
-        # 为了与安装的 App Store 类型 provisioning profiles 保持一致，强制使用 app-store 导出方式
+        # 与 App Store 类型描述文件匹配
         EXPORT_METHOD: app-store
       groups:
         - ios_match
@@ -15,7 +15,6 @@ workflows:
       node: 20.12.2
       npm: 10.5.0
       ruby: 3.3.6
-      gem: 3.5.15
     cache:
       cache_paths:
         - $HOME/Library/Caches/CocoaPods
@@ -24,33 +23,26 @@ workflows:
         - $CM_BUILD_DIR/ios/Pods
         - $CM_BUILD_DIR/ios/build
         - $HOME/Library/Caches/bundle
-      pre_build_scripts_cache_key: v1-ios-mm-whitelabel
     scripts:
-      - name: Ruby/Fastlane + CocoaPods（固定版本 1.16.1）
+      - name: 安装 Ruby 工具链与 CocoaPods（固定为 1.16.1）
         script: |
           set -euo pipefail
-          echo ">> 安装 CocoaPods 1.16.1 与 bundler"
           gem install cocoapods -v 1.16.1 --no-document
           gem install bundler --no-document
           echo "ruby -v: $(ruby -v)"
           echo "gem -v: $(gem -v)"
           echo "pod --version: $(pod --version)"
+      - name: 安装依赖（npm ci）
+        script: |
+          set -euo pipefail
+          npm ci
       - name: pods 安装（pod install）
         script: |
           set -euo pipefail
           cd ios
-          # 使用项目 Podfile.lock 指定版本（如有），避免漂移
           pod repo update --silent || true
           pod install --repo-update
           cd -
-      - name: pods 安装与初始化（Pod install + match readonly）
-        script: |
-          set -euo pipefail
-          # 这里如果你的仓库脚本会执行 match/证书初始化，可保留。若没有，可忽略。
-          echo ">>（可选）此处执行证书/描述文件的初始化逻辑"
-          # 示例：
-          # bundle install
-          # bundle exec fastlane ios certificates
       - name: "🔧 Patch Pods project for TurboLogIOSNative (remove .modulemap from Compile Sources)"
         script: |
           set -e
@@ -60,7 +52,6 @@ workflows:
           proj = Xcodeproj::Project.open('Pods/Pods.xcodeproj')
           t = proj.targets.find { |x| x.name == 'TurboLogIOSNative' }
           if t
-            # 兼容不同 xcodeproj 版本下的方法名差异
             phase = if t.respond_to?(:sources_build_phase)
               t.sources_build_phase
             elsif t.respond_to?(:source_build_phase)
@@ -68,7 +59,6 @@ workflows:
             else
               nil
             end
-
             removed = 0
             if phase
               phase.files.each do |bf|
@@ -80,12 +70,9 @@ workflows:
                 end
               end
             end
-
-            # 显式设置 MODULEMAP_FILE（保持正确位置）
             t.build_configurations.each do |cfg|
               cfg.build_settings['MODULEMAP_FILE'] = '$(SRCROOT)/TurboLogIOSNative/Sources/TurboLogSwift/module.modulemap'
             end
-
             proj.save
             puts "✅ Removed #{removed} *.modulemap from Compile Sources in TurboLogIOSNative"
           else
@@ -117,7 +104,6 @@ workflows:
               end
             end
           end
-
           if errors.any?
             warn "Found modulemap in Compile Sources:\n  - " + errors.join("\n  - ")
             exit 1
@@ -129,8 +115,7 @@ workflows:
       - name: 替换白标资源与配置（icons / splash / bundle id 等）
         script: |
           set -euo pipefail
-          echo ">> 这里保留你原先的资源替换、Info.plist 调整、entitlements、Team ID 等脚本"
-          # 按你仓库里的逻辑执行
+          echo ">> 在此执行你仓库已有的白标资源替换与 Info.plist / entitlements / Team ID 调整"
       - name: 打印必须的环境变量（安全检查）
         script: |
           set -euo pipefail
@@ -145,22 +130,17 @@ workflows:
       - name: 构建 iOS（使用仓库 lane）
         script: |
           set -euo pipefail
-          # 由仓库中的脚本触发 fastlane，内部应读取 EXPORT_METHOD=app-store
           npm run build:ios
       - name: 收集制品
         script: |
           set -euo pipefail
           mkdir -p build_outputs
-          # iPA / dSYM / xcarchive 的路径按你仓库的输出放置
-          # 举例：
+          # 依据你仓库的输出路径拷贝 IPA / dSYM / xcarchive
           # cp ./ios/*.ipa build_outputs/ || true
           # cp -R ~/Library/Developer/Xcode/Archives/*/*.xcarchive build_outputs/ || true
     artifacts:
       - build_outputs/**/*
-    publishing:
-      email:
-        recipients:
-          - $EMAIL_TO
+
   mm-whitelabel-android:
     name: "Mattermost WhiteLabel Android"
     max_build_duration: 120
@@ -182,7 +162,3 @@ workflows:
           npm run build:android
     artifacts:
       - android_build_outputs/**/*
-    publishing:
-      email:
-        recipients:
-          - $EMAIL_TO
