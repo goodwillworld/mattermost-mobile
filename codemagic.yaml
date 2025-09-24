@@ -147,13 +147,29 @@ workflows:
       - name: Ruby/Fastlane + CocoaPods（用固定的 1.16.1 执行）
         script: |
           set -e
-          # 不使用 bundler，避免触发 .ruby-version 要求的 rbenv 3.2.0
+
+          # ① 强制 rbenv 使用已安装的 Ruby（覆盖 .ruby-version 的 3.2.0）
+          if command -v rbenv >/dev/null 2>&1; then
+            # 取一个已安装版本（优先 3.x），没有就用 system
+            RB_INST="$(rbenv versions --bare | grep -E '^[0-9]+\.[0-9]+' | tail -1 || true)"
+            export RBENV_VERSION="${RB_INST:-system}"
+            echo "Using rbenv Ruby: ${RBENV_VERSION}"
+          fi
           ruby -v || true
 
+          # ② 临时“屏蔽”仓库根的 .ruby-version，防止子进程再次读取 3.2.0
+          if [ -f .ruby-version ]; then
+            mv .ruby-version .ruby-version.bak
+            trap 'mv .ruby-version.bak .ruby-version 2>/dev/null || true' EXIT
+          fi
+
+          # ③ 使用我们已安装到 $HOME/.gem 的 CocoaPods 1.16.1（不走 bundler）
           cd ios
-          # 使用上一步安装/固定的 CocoaPods 1.16.1（不走 bundler）
-          env -i PATH="$PATH" GEM_HOME="$HOME/.gem" GEM_PATH="$HOME/.gem" HOME="$HOME" LANG="${LANG:-en_US.UTF-8}" pod _1.16.1_ install --repo-update
+          RBENV_VERSION="${RBENV_VERSION}" \
+          GEM_HOME="$HOME/.gem" GEM_PATH="$HOME/.gem" HOME="$HOME" LANG="${LANG:-en_US.UTF-8}" \
+          pod _1.16.1_ install --repo-update
           cd ..
+
 
       - name: 配置证书库（HTTPS + Token）并自检
         script: "set -e; if [ -z \"${GITHUB_PAT:-}\" ]; then echo '❌ 缺少 GITHUB_PAT'; exit 1; fi; export MATCH_GIT_URL=\"https://${GITHUB_PAT}@github.com/goodwillworld/ios-certs.git\"; echo 'MATCH_GIT_URL set (token masked)'; git -c credential.helper= ls-remote \"$MATCH_GIT_URL\" >/dev/null; echo '✅ match 证书库可访问（HTTPS+Token）'; export SIGH_GIT_URL=\"$MATCH_GIT_URL\""
