@@ -215,24 +215,62 @@ workflows:
           ruby /tmp/patch_pods_modulemap.rb
           cd ..
 
-      - name: 🔄 Force export_method to app-store
+      - name: 🔄 Force export method to App Store (hard override)
         script: |
           set -e
-          # 方式 A：环境变量（gym 会识别）
+
+          echo "▶ Set env for gym"
           export GYM_EXPORT_METHOD=app-store
           echo "GYM_EXPORT_METHOD=$GYM_EXPORT_METHOD"
 
-          # 方式 B：如果 Fastfile 里硬编码了 ad-hoc，则直接替换为 app-store
+          # 1) Fastfile 中常见字符串写法：export_method: 'ad-hoc' / "ad-hoc"
           if [ -f fastlane/Fastfile ]; then
-            # 常见写法：export_method: 'ad-hoc' 或 "ad-hoc"
-            sed -i.bak "s/export_method:[[:space:]]*['\"]ad-hoc['\"]/export_method: 'app-store'/" fastlane/Fastfile || true
-            # 另一种写法（键值之间可能没空格）
-            sed -i.bak "s/export_method:['\"]ad-hoc['\"]/export_method: 'app-store'/" fastlane/Fastfile || true
+            echo "▶ Patching fastlane/Fastfile"
+            cp fastlane/Fastfile fastlane/Fastfile.bak
+
+            # a) 字符串写法（单/双引号）
+            sed -i.bak -E "s/export_method:[[:space:]]*['\"]ad-?hoc['\"]/export_method: 'app-store'/g" fastlane/Fastfile || true
+            # b) 符号写法 :ad_hoc  -> :app_store
+            sed -i.bak -E "s/:ad_?hoc/:app_store/g" fastlane/Fastfile || true
+            # c) 另一种字符串写法（无空格）
+            sed -i.bak -E "s/export_method:['\"]ad-?hoc['\"]/export_method: 'app-store'/g" fastlane/Fastfile || true
+
+            echo "▶ After patch, show gym/export_method lines for review"
+            awk 'NR>=p && NR<=p+20{print NR":",$0} /gym\(/ {p=NR} /export_method/ {print NR":",$0}' fastlane/Fastfile || true
+            echo "▶ Grep export_method:"
+            grep -n "export_method" fastlane/Fastfile || true
           fi
 
-          # 打印一下 Fastfile 中的 gym 行，确认是否仍有 ad-hoc 痕迹
-          grep -n "gym(" -n fastlane/Fastfile || true
-          grep -n "export_method" fastlane/Fastfile || true
+          # 2) 如仓库使用 ExportOptions.plist（有时在 fastlane/ 或 ios/fastlane/）
+          echo "▶ Looking for ExportOptions.plist"
+          FOUND_PLISTS=$( (ls -1 fastlane/ExportOptions.plist 2>/dev/null || true; \
+                          ls -1 ios/fastlane/ExportOptions.plist 2>/dev/null || true; \
+                          find . -maxdepth 3 -name ExportOptions.plist 2>/dev/null || true) | sort -u )
+          if [ -n "$FOUND_PLISTS" ]; then
+            echo "$FOUND_PLISTS" | while read f; do
+              [ -f "$f" ] || continue
+              echo "  - Patch $f -> method=app-store"
+              /usr/libexec/PlistBuddy -c "Set :method app-store" "$f" 2>/dev/null || \
+              /usr/libexec/PlistBuddy -c "Add :method string app-store" "$f" 2>/dev/null || true
+
+              # 可选：确保 provisioningProfiles 节不强行指定 Ad Hoc 的映射
+              # 如果这里有旧的 adhoc 映射，你可以先删再让 fastlane/match 注入
+              /usr/libexec/PlistBuddy -c "Delete :provisioningProfiles" "$f" 2>/dev/null || true
+
+              echo "  - Dump $f"
+              /usr/libexec/PlistBuddy -c "Print" "$f" || true
+            done
+          else
+            echo "  (no ExportOptions.plist found, OK)"
+          fi
+
+          # 3) 防呆：如仍残留 ad-hoc 痕迹则直接失败，避免继续浪费时间
+          if [ -f fastlane/Fastfile ] && grep -qE "export_method:[[:space:]]*['\"]ad-?hoc['\"]|:ad_?hoc" fastlane/Fastfile; then
+            echo "❌ Fastfile 仍包含 ad-hoc，请检查替换规则或把相关片段贴出来我来精确改"
+            exit 1
+          fi
+
+          echo "✅ export_method 强制为 app-store"
 
 
       - name: 配置证书库（HTTPS + Token）并自检
