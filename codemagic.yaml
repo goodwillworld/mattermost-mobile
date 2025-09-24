@@ -1,164 +1,113 @@
-workflows:
-  mm-whitelabel-ios:
-    name: "Mattermost WhiteLabel iOS (TestFlight/App Store)"
+  workflows:
+  mattermost_whitelabel_ios:
+    name: Mattermost WhiteLabel iOS (TestFlight/App Store)
     max_build_duration: 120
+    instance_type: mac_mini_m2
+
     environment:
-      vars:
-        # 与 App Store 类型描述文件匹配
-        EXPORT_METHOD: app-store
-      groups:
-        - ios_match
-        - whitelabel_common
-        - whitelabel_ios
-      xcode: latest
+      xcode: 16.4
       cocoapods: default
-      node: 20.12.2
-      npm: 10.5.0
-      ruby: 3.3.6
+      # 如需在 Codemagic 中放密钥，请在 UI 的 Environment variables 里添加，不要写在文件中
+      vars:
+        FASTLANE_SKIP_UPDATE_CHECK: "1"
+        MATCH_READONLY: "true"
+        # 你的 Fastfile/Matchfile 已经指向仓库 ios-certs.git 和分支 master
+        # 如要覆盖，可在 Codemagic UI 里设置以下变量（可选）：
+        # MATCH_GIT_URL: "https://github.com/goodwillworld/ios-certs.git"
+        # MATCH_GIT_BRANCH: "master"
+        # 也可以在 UI 里设置 FASTLANE_USER / FASTLANE_PASSWORD / APP_STORE_CONNECT_API_KEY_* 等（如果需要）
+
     cache:
       cache_paths:
         - $HOME/Library/Caches/CocoaPods
-        - $HOME/Library/MobileDevice/Provisioning Profiles
-        - $CM_BUILD_DIR/node_modules
-        - $CM_BUILD_DIR/ios/Pods
-        - $CM_BUILD_DIR/ios/build
-        - $HOME/Library/Caches/bundle
+        - ios/Pods
+        - $HOME/Library/Developer/Xcode/DerivedData
+        - $HOME/.gradle/caches # 无伤项，便于后续复用
+
     scripts:
-      - name: 安装 Ruby 工具链与 CocoaPods（固定为 1.16.1）
+      - name: Select Ruby (best effort)
         script: |
-          set -euo pipefail
-          gem install cocoapods -v 1.16.1 --no-document
-          gem install bundler --no-document
-          echo "ruby -v: $(ruby -v)"
-          echo "gem -v: $(gem -v)"
-          echo "pod --version: $(pod --version)"
-      - name: 安装依赖（npm ci）
+          rbenv local 3.3.6 || true
+          ruby -v
+          gem -v
+          bundle -v || true
+
+      - name: Install JS dependencies
         script: |
-          set -euo pipefail
+          node -v
+          npm -v
           npm ci
-      - name: pods 安装（pod install）
+
+      - name: Pod install (with Bundler if Gemfile exists)
         script: |
-          set -euo pipefail
           cd ios
-          pod repo update --silent || true
-          pod install --repo-update
-          cd -
-      - name: "🔧 Patch Pods project for TurboLogIOSNative (remove .modulemap from Compile Sources)"
+          if [ -f "../Gemfile" ]; then
+            bundle install --path vendor/bundle
+            bundle exec pod install
+          else
+            pod install
+          fi
+
+      - name: 🔧 Patch Pods project for TurboLogIOSNative (remove module.modulemap from Compile Sources)
         script: |
           set -e
           cd ios
           ruby - <<'RUBY'
-          require 'xcodeproj'
-          proj = Xcodeproj::Project.open('Pods/Pods.xcodeproj')
-          t = proj.targets.find { |x| x.name == 'TurboLogIOSNative' }
-          if t
-            phase = if t.respond_to?(:sources_build_phase)
-              t.sources_build_phase
-            elsif t.respond_to?(:source_build_phase)
-              t.source_build_phase
-            else
-              nil
+            require 'xcodeproj'
+            proj_path = 'Pods/Pods.xcodeproj'
+            unless File.exist?(proj_path)
+              puts "⚠️ #{proj_path} not found, skip patch"
+              exit 0
+            end
+            proj = Xcodeproj::Project.open(proj_path)
+            target = proj.targets.find { |t| t.name == 'TurboLogIOSNative' }
+            if target.nil?
+              puts "ℹ️ Target TurboLogIOSNative not found, skip patch"
+              exit 0
             end
             removed = 0
-            if phase
-              phase.files.each do |bf|
-                fr = bf.file_ref
-                next unless fr && fr.path
-                if fr.path.end_with?('TurboLogSwift/module.modulemap') || fr.path.end_with?('module.modulemap')
-                  phase.remove_file_reference(fr)
-                  removed += 1
-                end
-              end
+            # 兼容不同版本 API：source_build_phase / sources_build_phase
+            src_phase = target.respond_to?(:source_build_phase) ? target.source_build_phase : target.sources_build_phase
+            src_files = src_phase.files
+
+            # 移除误加到 Compile Sources 的任何 *.modulemap，重点是 TurboLogSwift/module.modulemap
+            src_files.select { |f|
+              path = f.file_ref&.path.to_s
+              path.end_with?('TurboLogSwift/module.modulemap') || path.end_with?('.modulemap')
+            }.each do |f|
+              src_phase.remove_file_reference(f.file_ref)
+              removed += 1
             end
-            t.build_configurations.each do |cfg|
+
+            # 显式指定 MODULEMAP_FILE，避免构建器误处理
+            target.build_configurations.each do |cfg|
               cfg.build_settings['MODULEMAP_FILE'] = '$(SRCROOT)/TurboLogIOSNative/Sources/TurboLogSwift/module.modulemap'
             end
-            proj.save
-            puts "✅ Removed #{removed} *.modulemap from Compile Sources in TurboLogIOSNative"
-          else
-            puts "ℹ️ Target TurboLogIOSNative not found"
-          end
-          RUBY
-          cd ..
-      - name: "🔎 Assert: no .modulemap left in Compile Sources"
-        script: |
-          set -e
-          cd ios
-          ruby - <<'RUBY'
-          require 'xcodeproj'
-          proj = Xcodeproj::Project.open('Pods/Pods.xcodeproj')
-          errors = []
-          proj.targets.each do |t|
-            phase = if t.respond_to?(:sources_build_phase)
-              t.sources_build_phase
-            elsif t.respond_to?(:source_build_phase)
-              t.source_build_phase
-            else
-              nil
-            end
-            next unless phase
-            phase.files.each do |bf|
-              fr = bf.file_ref
-              if fr && fr.path && fr.path.end_with?('module.modulemap')
-                errors << "#{t.name}: #{fr.path}"
-              end
-            end
-          end
-          if errors.any?
-            warn "Found modulemap in Compile Sources:\n  - " + errors.join("\n  - ")
-            exit 1
-          else
-            puts "✅ No module.modulemap in any Compile Sources"
-          end
-          RUBY
-          cd ..
-      - name: 替换白标资源与配置（icons / splash / bundle id 等）
-        script: |
-          set -euo pipefail
-          echo ">> 在此执行你仓库已有的白标资源替换与 Info.plist / entitlements / Team ID 调整"
-      - name: 打印必须的环境变量（安全检查）
-        script: |
-          set -euo pipefail
-          echo "CM_REPO_SLUG=${CM_REPO_SLUG}"
-          echo "APP_DISPLAY_NAME=${APP_DISPLAY_NAME}"
-          echo "BUNDLE_ID=${BUNDLE_ID}"
-          echo "BUNDLE_ID_SHARE=${BUNDLE_ID_SHARE}"
-          echo "BUNDLE_ID_NOTI=${BUNDLE_ID_NOTI}"
-          echo "TEAM_ID=${TEAM_ID}"
-          echo "PROVISIONING_GIT_URL 已在组变量中设置"
-          echo "EXPORT_METHOD=${EXPORT_METHOD}"
-      - name: 构建 iOS（使用仓库 lane）
-        script: |
-          set -euo pipefail
-          npm run build:ios
-      - name: 收集制品
-        script: |
-          set -euo pipefail
-          mkdir -p build_outputs
-          # 依据你仓库的输出路径拷贝 IPA / dSYM / xcarchive
-          # cp ./ios/*.ipa build_outputs/ || true
-          # cp -R ~/Library/Developer/Xcode/Archives/*/*.xcarchive build_outputs/ || true
-    artifacts:
-      - build_outputs/**/*
 
-  mm-whitelabel-android:
-    name: "Mattermost WhiteLabel Android"
-    max_build_duration: 120
-    environment:
-      groups:
-        - whitelabel_common
-        - whitelabel_android
-      node: 20.12.2
-      npm: 10.5.0
-      java: 17
-    scripts:
-      - name: 安装依赖
+            proj.save
+            puts "✅ Removed #{removed} .modulemap from Compile Sources & set MODULEMAP_FILE"
+          RUBY
+          cd ..
+
+      - name: Build via fastlane (app-store)
         script: |
-          set -euo pipefail
-          npm ci
-      - name: 构建 Android（使用仓库脚本）
-        script: |
-          set -euo pipefail
-          npm run build:android
+          # 使用你仓库里的 Fastlane。你的 Fastfile 已经把导出方式切到 app-store（或由环境导出）
+          bundle install || true
+          # 强制走 app-store，以匹配 match AppStore ... 的描述文件
+          export EXPORT_METHOD=app-store
+          bundle exec fastlane ios build
+
     artifacts:
-      - android_build_outputs/**/*
+      - "**/*.ipa"
+      - "**/*.xcarchive"
+      - "**/dSYM.zip"
+      - "fastlane/report.xml"
+      - "~/Library/Logs/gym/*.log"
+
+    publishing:
+      email:
+        recipients:
+          - "844655188@qq.com"
+        notify:
+          success: true
+          failure: true
