@@ -6,7 +6,7 @@ workflows:
     instance_type: linux_x2
     environment:
       android_signing:
-        - jboth_android_keystore_ref
+        - jboth_android_keystore_ref   # Team settings → Code signing identities 的引用名
       groups:
         - mm_common
         - jboth_client
@@ -104,9 +104,11 @@ workflows:
       vars:
         BUILD_FOR_RELEASE: "true"
         REPLACE_ASSETS: "true"
-        # 必备：FASTLANE_TEAM_ID、MATCH_USERNAME、MATCH_PASSWORD、MATCH_APP_IDENTIFIER、MATCH_TYPE=appstore
-        # 以及 ASC_KEY_ID、ASC_ISSUER_ID、ASC_PRIVATE_KEY（Secret）
-        # GITHUB_PAT（Secret，用于 ios-certs 访问）
+        # 必备（以 Secret 形式设置）：
+        # FASTLANE_TEAM_ID、MATCH_USERNAME、MATCH_PASSWORD、
+        # MATCH_APP_IDENTIFIER（逗号分隔，如：com.jboth.mine,com.jboth.mine.MattermostShare,com.jboth.mine.NotificationService）、
+        # MATCH_TYPE=appstore、GITHUB_PAT、
+        # ASC_KEY_ID、ASC_ISSUER_ID、ASC_PRIVATE_KEY
 
     cache:
       cache_paths:
@@ -148,28 +150,26 @@ workflows:
         script: |
           set -e
 
-          # ① 强制 rbenv 使用已安装的 Ruby（覆盖 .ruby-version 的 3.2.0）
+          # ① 强制 rbenv 使用已安装 Ruby（覆盖 .ruby-version 的 3.2.0）
           if command -v rbenv >/dev/null 2>&1; then
-            # 取一个已安装版本（优先 3.x），没有就用 system
             RB_INST="$(rbenv versions --bare | grep -E '^[0-9]+\.[0-9]+' | tail -1 || true)"
             export RBENV_VERSION="${RB_INST:-system}"
             echo "Using rbenv Ruby: ${RBENV_VERSION}"
           fi
           ruby -v || true
 
-          # ② 临时“屏蔽”仓库根的 .ruby-version，防止子进程再次读取 3.2.0
+          # ② 临时屏蔽 .ruby-version，防止子进程再读 3.2.0
           if [ -f .ruby-version ]; then
             mv .ruby-version .ruby-version.bak
             trap 'mv .ruby-version.bak .ruby-version 2>/dev/null || true' EXIT
           fi
 
-          # ③ 使用我们已安装到 $HOME/.gem 的 CocoaPods 1.16.1（不走 bundler）
+          # ③ 使用 $HOME/.gem 的 CocoaPods 1.16.1（不走 bundler）
           cd ios
           RBENV_VERSION="${RBENV_VERSION}" \
           GEM_HOME="$HOME/.gem" GEM_PATH="$HOME/.gem" HOME="$HOME" LANG="${LANG:-en_US.UTF-8}" \
           pod _1.16.1_ install --repo-update
           cd ..
-
 
       - name: 配置证书库（HTTPS + Token）并自检
         script: "set -e; if [ -z \"${GITHUB_PAT:-}\" ]; then echo '❌ 缺少 GITHUB_PAT'; exit 1; fi; export MATCH_GIT_URL=\"https://${GITHUB_PAT}@github.com/goodwillworld/ios-certs.git\"; echo 'MATCH_GIT_URL set (token masked)'; git -c credential.helper= ls-remote \"$MATCH_GIT_URL\" >/dev/null; echo '✅ match 证书库可访问（HTTPS+Token）'; export SIGH_GIT_URL=\"$MATCH_GIT_URL\""
@@ -195,8 +195,9 @@ workflows:
           : "${ASC_ISSUER_ID:?缺少 ASC_ISSUER_ID}"
           : "${ASC_PRIVATE_KEY:?缺少 ASC_PRIVATE_KEY}"
           : "${FASTLANE_TEAM_ID:?缺少 FASTLANE_TEAM_ID}"
+          : "${MATCH_APP_IDENTIFIER:?缺少 MATCH_APP_IDENTIFIER（逗号分隔）}"
 
-          # 1) 准备 fastlane（有 Gemfile 用 bundler，否则用 gem）
+          # 安装/选择 fastlane
           if [ -f Gemfile ] && grep -qi 'fastlane' Gemfile; then
             gem install bundler --no-document
             bundle install
@@ -207,45 +208,40 @@ workflows:
           fi
           $FL --version
 
-          # 2) 生成 ASC API Key JSON（安全转义）
+          # 生成 ASC API Key JSON（安全转义）
           python3 - <<'PY'
-          import os, json
-          data={
-            "key_id": os.environ["ASC_KEY_ID"].strip(),
-            "issuer_id": os.environ["ASC_ISSUER_ID"].strip(),
-            "key": os.environ["ASC_PRIVATE_KEY"].replace("\r\n","\n").replace("\r","\n"),
-            "in_house": False
-          }
-          open("asc_api_key.json","w").write(json.dumps(data))
-          PY
+import os, json
+data={
+  "key_id": os.environ["ASC_KEY_ID"].strip(),
+  "issuer_id": os.environ["ASC_ISSUER_ID"].strip(),
+  "key": os.environ["ASC_PRIVATE_KEY"].replace("\r\n","\n").replace("\r","\n"),
+  "in_house": False
+}
+open("asc_api_key.json","w").write(json.dumps(data))
+PY
           python3 -m json.tool asc_api_key.json >/dev/null && echo "✅ asc_api_key.json OK"
 
-          # 3) 需要的 3 个 bundle id（主 App + Share Extension + Notification Service）
-          APP_NAME_CN="${APP_NAME:-加步协同}"  # 作为主 App 的名字；扩展用派生名
-          MAIN="com.jboth.mine"
-          SHARE="com.jboth.mine.MattermostShare"
-          NTFY="com.jboth.mine.NotificationService"
-
-          # 4) 用 produce 按需创建（存在则跳过）
-          create_if_missing() {
-            local bid="$1"; local name="$2"
-            echo "▶ 确保存在 App ID: $bid ($name)"
+          # 从 MATCH_APP_IDENTIFIER 读取并逐个创建（已存在则跳过）
+          APP_NAME_CN="${APP_NAME:-加步协同}"
+          IFS=',' read -r -a BIDS <<< "$MATCH_APP_IDENTIFIER"
+          for BID in "${BIDS[@]}"; do
+            BID_TRIM="$(echo "$BID" | tr -d '[:space:]')"
+            case "$BID_TRIM" in
+              *.MattermostShare) NAME="${APP_NAME_CN} Share Extension" ;;
+              *.NotificationService) NAME="${APP_NAME_CN} Notification Service" ;;
+              *) NAME="$APP_NAME_CN" ;;
+            esac
+            echo "▶ 确保 App ID 存在：$BID_TRIM  ($NAME)"
             $FL run produce \
-              app_identifier:"$bid" \
-              app_name:"$name" \
+              app_identifier:"$BID_TRIM" \
+              app_name:"$NAME" \
               skip_itc:"true" \
               team_id:"$FASTLANE_TEAM_ID" \
               api_key_path:"asc_api_key.json" \
               run_if:"true" \
               verbose:true || true
-          }
-
-          create_if_missing "$MAIN"  "$APP_NAME_CN"
-          create_if_missing "$SHARE" "${APP_NAME_CN} Share Extension"
-          create_if_missing "$NTFY"  "${APP_NAME_CN} Notification Service"
-
-          echo "✅ App IDs ensured."
-
+          done
+          echo "✅ App IDs ensured"
 
       - name: 首次初始化签名（仅当证书库为空时执行）
         script: |
@@ -277,15 +273,15 @@ workflows:
 
           # 生成 ASC API Key JSON（安全转义）
           python3 - <<'PY'
-          import os, json
-          data={
-            "key_id": os.environ["ASC_KEY_ID"].strip(),
-            "issuer_id": os.environ["ASC_ISSUER_ID"].strip(),
-            "key": os.environ["ASC_PRIVATE_KEY"].replace("\r\n","\n").replace("\r","\n"),
-            "in_house": False
-          }
-          open("asc_api_key.json","w").write(json.dumps(data))
-          PY
+import os, json
+data={
+  "key_id": os.environ["ASC_KEY_ID"].strip(),
+  "issuer_id": os.environ["ASC_ISSUER_ID"].strip(),
+  "key": os.environ["ASC_PRIVATE_KEY"].replace("\r\n","\n").replace("\r","\n"),
+  "in_house": False
+}
+open("asc_api_key.json","w").write(json.dumps(data))
+PY
           python3 -m json.tool asc_api_key.json >/dev/null && echo "✅ asc_api_key.json OK"
 
           # 临时 keychain，避免交互
@@ -322,13 +318,16 @@ workflows:
 
     publishing:
       app_store_connect:
-        api_key: |
-          -----BEGIN PRIVATE KEY-----
-          MIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQgTHFCUEmtmzuEaG/T
-          zD5C5EBtEBsuWf54ZxCbWmpD/lugCgYIKoZIzj0DAQehRANCAAS6nYsA0zoFzGbY
-          t9rYpOKdcq0hG8zmImfhjOct0m609Z/J4fOcoxeLd3LJr4DAo6Kk+PBeCFBvrxIl
-          j5J7JvfX
-          -----END PRIVATE KEY-----
-        key_id: "UZ33M397NY"
-        issuer_id: "26e601c9-c2f0-497a-a9e1-39a426cecf9a"
+        api_key:
+          key_id: "UZ33M397NY"
+          issuer_id: "26e601c9-c2f0-497a-a9e1-39a426cecf9a"
+          key: |
+            -----BEGIN PRIVATE KEY-----
+            MIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQgTHFCUEmtmzuEaG/T
+            zD5C5EBtEBsuWf54ZxCbWmpD/lugCgYIKoZIzj0DAQehRANCAAS6nYsA0zoFzGbY
+            t9rYpOKdcq0hG8zmImfhjOct0m609Z/J4fOcoxeLd3LJr4DAo6Kk+PBeCFBvrxIl
+            j5J7JvfX
+            -----END PRIVATE KEY-----
         submit_to_testflight: true
+        # 需要直接上架时再打开：
+        # submit_to_app_store: true
