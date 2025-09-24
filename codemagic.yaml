@@ -168,63 +168,70 @@ workflows:
           pod _1.16.1_ install --repo-update
           cd ..
 
-      - name: 🔧 Patch Pods project (remove any .modulemap from Compile Sources)
+      - name: 🔧 Patch Pods project (purge any .modulemap from ALL build phases)
         script: |
           set -e
           cd ios
 
-          # 写入临时 Ruby 脚本（避免 here-doc 缩进问题）
-          cat > /tmp/patch_turblog.rb <<'RB'
+          # 写入临时 Ruby（避免 here-doc 缩进问题）
+          cat > /tmp/patch_pods_modulemap.rb <<'RB'
             require 'xcodeproj'
-            proj = Xcodeproj::Project.open('Pods/Pods.xcodeproj')
-            removed_total = 0
+
+            proj_path = 'Pods/Pods.xcodeproj'
+            abort("Pods project not found: #{proj_path}") unless File.exist?(proj_path)
+            proj = Xcodeproj::Project.open(proj_path)
+
+            TARGET_NAME = 'TurboLogIOSNative'
+            REMOVED = []
 
             proj.targets.each do |t|
-              next unless t.name == 'TurboLogIOSNative'
+              next unless t.name == TARGET_NAME
 
-              # 兼容不同 xcodeproj 版本：单数/复数/遍历
-              phases = []
-              phases << (t.respond_to?(:source_build_phase) ? t.source_build_phase : nil)
-              phases << (t.respond_to?(:sources_build_phase) ? t.sources_build_phase : nil)
-              phases += t.build_phases.select { |p| p.display_name.to_s =~ /Sources/i }
-              phases.compact.uniq.each do |phase|
-                file_refs =
-                  if phase.respond_to?(:files_references)
-                    phase.files_references.compact
-                  else
-                    phase.files.compact.map(&:file_ref).compact
-                  end
-
-                file_refs.select { |fr| (fr.path || '') =~ /\.modulemap$/ }.each do |fr|
-                  if phase.respond_to?(:remove_file_reference)
-                    phase.remove_file_reference(fr)
-                  else
-                    phase.files.select { |bf| bf.file_ref == fr }.each { |bf| bf.remove_from_project }
-                  end
-                  removed_total += 1
+              # 遍历所有 Build Phase（Sources/Headers/Resources/CopyFiles 等）
+              t.build_phases.each do |phase|
+                files = (phase.respond_to?(:files) ? phase.files : []) || []
+                files.dup.each do |bf|
+                  fr = bf.file_ref
+                  next unless fr && fr.path && fr.path.end_with?('.modulemap')
+                  bf.remove_from_project
+                  REMOVED << "#{t.name} :: #{phase.display_name || phase.class} :: #{fr.path}"
                 end
               end
 
-              # 明确 MODULEMAP_FILE，避免找不到
+              # 保险：把 MODULEMAP_FILE 指到源码路径，同时不强制拷贝
               candidate = '$(SRCROOT)/TurboLogIOSNative/Sources/TurboLogSwift/module.modulemap'
-              t.build_configurations.each { |cfg| cfg.build_settings['MODULEMAP_FILE'] ||= candidate }
+              t.build_configurations.each do |cfg|
+                cfg.build_settings['MODULEMAP_FILE'] = candidate
+                # 如果三方库误把 modulemap 当资源复制，关闭下：
+                cfg.build_settings['COPY_PHASE_STRIP'] = 'NO'
+              end
             end
 
             proj.save
-            puts "✅ Removed #{removed_total} *.modulemap from Compile Sources in TurboLogIOSNative"
+            puts "✅ Removed #{REMOVED.size} .modulemap entries from build phases"
+            REMOVED.each { |r| puts " - #{r}" }
           RB
 
-          ruby /tmp/patch_turblog.rb
+          ruby /tmp/patch_pods_modulemap.rb
           cd ..
 
 
-      - name: 🔄 Force export_method to app-store (Fastfile patch + env)
+      - name: 🔄 Force export_method to app-store (override Fastfile + env)
         script: |
           set -e
+          # 1) 环境变量方式（gym 会读取）
+          export GYM_EXPORT_METHOD=app-store
+
+          # 2) 防御性：若 Fastfile 里硬编码了 ad-hoc，这里改掉
           if [ -f fastlane/Fastfile ]; then
             sed -i.bak "s/export_method:[[:space:]]*['\"]ad-hoc['\"]/export_method: 'app-store'/" fastlane/Fastfile || true
+            # 常见写法再兜底一次（冒号后可能没空格）
+            sed -i.bak "s/export_method:['\"]ad-hoc['\"]/export_method: 'app-store'/" fastlane/Fastfile || true
           fi
-          export GYM_EXPORT_METHOD=app-store
+
+          # 3) 清一下 DerivedData，避免用到之前 ad-hoc 残留
+          rm -rf ~/Library/Developer/Xcode/DerivedData/*
+
 
 
       - name: 配置证书库（HTTPS + Token）并自检
