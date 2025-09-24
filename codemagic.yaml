@@ -105,6 +105,7 @@ workflows:
       vars:
         BUILD_FOR_RELEASE: "true"
         REPLACE_ASSETS: "true"
+        GYM_EXPORT_METHOD: "app-store"
         # 必备（Secret）：
         # FASTLANE_TEAM_ID、MATCH_USERNAME、MATCH_PASSWORD、
         # MATCH_APP_IDENTIFIER（逗号分隔：com.jboth.mine,com.jboth.mine.MattermostShare,com.jboth.mine.NotificationService）、
@@ -246,6 +247,33 @@ workflows:
             verbose:true
 
           echo "✅ 初始化完成：后续 match 可只读"
+
+      - name: 🔧 Patch Pods project for TurboLogIOSNative (CI hotfix)
+        script: |
+          set -e
+          cd ios
+          ruby - <<'RUBY'
+            require 'xcodeproj'
+            proj = Xcodeproj::Project.open('Pods/Pods.xcodeproj')
+            t = proj.targets.find { |t| t.name == 'TurboLogIOSNative' }
+            if t
+              # 从 Compile Sources 移除 module.modulemap
+              t.sources_build_phase.files_references.select { |fr|
+                (fr.path || '').end_with?('TurboLogSwift/module.modulemap')
+              }.each { |fr|
+                t.sources_build_phase.remove_file_reference(fr)
+              }
+              # 显式指定 MODULEMAP_FILE（可选但稳妥）
+              t.build_configurations.each { |cfg|
+                cfg.build_settings['MODULEMAP_FILE'] = '$(SRCROOT)/TurboLogIOSNative/Sources/TurboLogSwift/module.modulemap'
+              }
+              proj.save
+              puts "✅ Patched TurboLogIOSNative"
+            else
+              puts "ℹ️ Target TurboLogIOSNative not found"
+            end
+          RUBY
+          cd ..
 
       - name: 构建 iOS（使用仓库 lane）
         script: |
