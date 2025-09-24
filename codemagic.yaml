@@ -168,6 +168,67 @@ workflows:
           pod _1.16.1_ install --repo-update
           cd ..
 
+      - name: 🔧 Patch Pods project for TurboLogIOSNative (CI hotfix)
+        script: |
+          set -e
+          cd ios
+          ruby - <<'RUBY'
+            require 'xcodeproj'
+
+            proj = Xcodeproj::Project.open('Pods/Pods.xcodeproj')
+            target = proj.targets.find { |t| t.name == 'TurboLogIOSNative' }
+
+            if target
+              # 兼容不同版本的 xcodeproj：优先用单数，其次用复数
+              phase = nil
+              phase = target.source_build_phase if target.respond_to?(:source_build_phase)
+              phase ||= target.sources_build_phase if target.respond_to?(:sources_build_phase)
+
+              if phase
+                # 拿到文件引用（不同版本可能没有 files_references，就从 files -> file_ref 取）
+                file_refs =
+                  if phase.respond_to?(:files_references)
+                    phase.files_references.compact
+                  else
+                    phase.files.compact.map(&:file_ref).compact
+                  end
+
+                # 匹配可能的 modulemap 路径
+                matches = file_refs.select do |fr|
+                  p = (fr.path || '')
+                  p.end_with?('TurboLogSwift/module.modulemap') ||
+                  p.end_with?('Sources/TurboLogSwift/module.modulemap')
+                end
+
+                removed = 0
+                matches.each do |fr|
+                  # 兼容不同 API：有 remove_file_reference 就用，没有就删除 build file
+                  if phase.respond_to?(:remove_file_reference)
+                    phase.remove_file_reference(fr)
+                  else
+                    phase.files.select { |bf| bf.file_ref == fr }.each { |bf| bf.remove_from_project }
+                  end
+                  removed += 1
+                end
+
+                # 显式设置 MODULEMAP_FILE，避免找不到
+                candidate = '$(SRCROOT)/TurboLogIOSNative/Sources/TurboLogSwift/module.modulemap'
+                target.build_configurations.each do |cfg|
+                  cfg.build_settings['MODULEMAP_FILE'] ||= candidate
+                end
+
+                proj.save
+                puts "✅ Patched TurboLogIOSNative (removed #{removed} module.modulemap from Compile Sources)"
+              else
+                puts "ℹ️ 没找到 Sources Build Phase，跳过"
+              end
+            else
+              puts "ℹ️ Target 'TurboLogIOSNative' not found; skip patch"
+            end
+          RUBY
+          cd ..
+
+
       - name: 配置证书库（HTTPS + Token）并自检
         script: "set -e; if [ -z \"${GITHUB_PAT:-}\" ]; then echo '❌ 缺少 GITHUB_PAT'; exit 1; fi; export MATCH_GIT_URL=\"https://${GITHUB_PAT}@github.com/goodwillworld/ios-certs.git\"; echo 'MATCH_GIT_URL set (token masked)'; git -c credential.helper= ls-remote \"$MATCH_GIT_URL\" >/dev/null; echo '✅ match 证书库可访问（HTTPS+Token）'; export SIGH_GIT_URL=\"$MATCH_GIT_URL\""
 
@@ -247,33 +308,6 @@ workflows:
             verbose:true
 
           echo "✅ 初始化完成：后续 match 可只读"
-
-      - name: 🔧 Patch Pods project for TurboLogIOSNative (CI hotfix)
-        script: |
-          set -e
-          cd ios
-          ruby - <<'RUBY'
-            require 'xcodeproj'
-            proj = Xcodeproj::Project.open('Pods/Pods.xcodeproj')
-            t = proj.targets.find { |t| t.name == 'TurboLogIOSNative' }
-            if t
-              # 从 Compile Sources 移除 module.modulemap
-              t.sources_build_phase.files_references.select { |fr|
-                (fr.path || '').end_with?('TurboLogSwift/module.modulemap')
-              }.each { |fr|
-                t.sources_build_phase.remove_file_reference(fr)
-              }
-              # 显式指定 MODULEMAP_FILE（可选但稳妥）
-              t.build_configurations.each { |cfg|
-                cfg.build_settings['MODULEMAP_FILE'] = '$(SRCROOT)/TurboLogIOSNative/Sources/TurboLogSwift/module.modulemap'
-              }
-              proj.save
-              puts "✅ Patched TurboLogIOSNative"
-            else
-              puts "ℹ️ Target TurboLogIOSNative not found"
-            end
-          RUBY
-          cd ..
 
       - name: 构建 iOS（使用仓库 lane）
         script: |
