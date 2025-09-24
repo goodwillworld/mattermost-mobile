@@ -147,12 +147,28 @@ workflows:
       - name: Ruby/Fastlane + CocoaPods（用固定的 1.16.1 执行）
         script: |
           set -e
+
+          # ▶ 关键：绕过 .ruby-version 对 rbenv 的强制
+          if command -v rbenv >/dev/null 2>&1; then
+            CURRENT="$(rbenv versions --bare | tail -1 || echo '')"
+            if [ -n "$CURRENT" ]; then
+              export RBENV_VERSION="$CURRENT"
+              echo "Using rbenv Ruby $RBENV_VERSION (override .ruby-version)"
+            else
+              echo "rbenv present but no versions listed; proceeding without override"
+            fi
+          fi
+          ruby -v
+
+          # 安装 bundler（用于 fastlane/插件），但不让它影响 pod 调用
           gem install bundler --no-document || true
-          [ -f Gemfile ] && bundle install || true
+          [ -f Gemfile ] && BUNDLE_WITHOUT="development:test" bundle install || true
+
           cd ios
-          # 使用上一步固定的 1.16.1（不通过 bundler），避免版本冲突
+          # 使用前一步固定的 CocoaPods 1.16.1（不走 bundler），避免版本冲突
           env -i PATH="$PATH" GEM_HOME="$HOME/.gem" GEM_PATH="$HOME/.gem" HOME="$HOME" LANG="${LANG:-en_US.UTF-8}" pod _1.16.1_ install --repo-update
           cd ..
+
 
       - name: 配置证书库（HTTPS + Token）并自检
         script: "set -e; if [ -z \"${GITHUB_PAT:-}\" ]; then echo '❌ 缺少 GITHUB_PAT'; exit 1; fi; export MATCH_GIT_URL=\"https://${GITHUB_PAT}@github.com/goodwillworld/ios-certs.git\"; echo 'MATCH_GIT_URL set (token masked)'; git -c credential.helper= ls-remote \"$MATCH_GIT_URL\" >/dev/null; echo '✅ match 证书库可访问（HTTPS+Token）'; export SIGH_GIT_URL=\"$MATCH_GIT_URL\""
