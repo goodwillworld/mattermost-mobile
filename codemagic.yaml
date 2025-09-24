@@ -215,23 +215,24 @@ workflows:
           ruby /tmp/patch_pods_modulemap.rb
           cd ..
 
-
-      - name: 🔄 Force export_method to app-store (override Fastfile + env)
+      - name: 🔄 Force export_method to app-store
         script: |
           set -e
-          # 1) 环境变量方式（gym 会读取）
+          # 方式 A：环境变量（gym 会识别）
           export GYM_EXPORT_METHOD=app-store
+          echo "GYM_EXPORT_METHOD=$GYM_EXPORT_METHOD"
 
-          # 2) 防御性：若 Fastfile 里硬编码了 ad-hoc，这里改掉
+          # 方式 B：如果 Fastfile 里硬编码了 ad-hoc，则直接替换为 app-store
           if [ -f fastlane/Fastfile ]; then
+            # 常见写法：export_method: 'ad-hoc' 或 "ad-hoc"
             sed -i.bak "s/export_method:[[:space:]]*['\"]ad-hoc['\"]/export_method: 'app-store'/" fastlane/Fastfile || true
-            # 常见写法再兜底一次（冒号后可能没空格）
+            # 另一种写法（键值之间可能没空格）
             sed -i.bak "s/export_method:['\"]ad-hoc['\"]/export_method: 'app-store'/" fastlane/Fastfile || true
           fi
 
-          # 3) 清一下 DerivedData，避免用到之前 ad-hoc 残留
-          rm -rf ~/Library/Developer/Xcode/DerivedData/*
-
+          # 打印一下 Fastfile 中的 gym 行，确认是否仍有 ad-hoc 痕迹
+          grep -n "gym(" -n fastlane/Fastfile || true
+          grep -n "export_method" fastlane/Fastfile || true
 
 
       - name: 配置证书库（HTTPS + Token）并自检
