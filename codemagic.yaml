@@ -258,18 +258,42 @@ workflows:
         \ \\\n  keychain_name:\"cm_tmp\" \\\n  keychain_password:\"$KEYCHAIN_PWD\"\
         \ \\\n  verbose:true\n\necho \"✅ 初始化完成：后续 match 可只读\"\n"
     
-    - name: 统一导出方式为 app-store（避免签名不匹配提示）
+    - name: 统一导出方式为 app-store（避免签名不匹配）
       script: |
         set -e
         export GYM_EXPORT_METHOD=app-store
+        export FL_GYM_EXPORT_METHOD=app-store
         export SIGH_PROFILE_TYPE=app-store
         echo "GYM_EXPORT_METHOD=$GYM_EXPORT_METHOD"
+        echo "FL_GYM_EXPORT_METHOD=$FL_GYM_EXPORT_METHOD"
         echo "SIGH_PROFILE_TYPE=$SIGH_PROFILE_TYPE"
+
 
     - name: 放宽 xcodebuild settings 超时
       script: |
         export FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT=120
         echo "FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT=$FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT"
+
+    - name: 重新生成 App Store 描述文件并安装（包含 App Groups）
+      script: |
+        set -e
+        if [ -f Gemfile ] && grep -qi fastlane Gemfile; then
+          gem install bundler --no-document
+          bundle install
+          FL="bundle exec fastlane"
+        else
+          gem install fastlane -v 2.228.0 --no-document || gem install fastlane --no-document
+          FL="fastlane"
+        fi
+        $FL run match \
+          type:"appstore" \
+          readonly:"false" \
+          force:"true" \
+          app_identifier:"com.jboth.mine,com.jboth.mine.MattermostShare,com.jboth.mine.NotificationService" \
+          team_id:"$FASTLANE_TEAM_ID" \
+          username:"$MATCH_USERNAME" \
+          git_url:"$MATCH_GIT_URL" \
+          verbose:true
 
 
     - name: 构建 iOS（使用仓库 lane）
