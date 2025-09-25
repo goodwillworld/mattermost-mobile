@@ -10,9 +10,9 @@ workflows:
         - mm_common
         - jboth_client
       vars:
-        BUILD_FOR_RELEASE: "true"
+        BUILD_FOR_RELEASE: 'true'
         ANDROID_BUILD_TASK: assemble
-        REPLACE_ASSETS: "true"
+        REPLACE_ASSETS: 'true'
     cache:
       cache_paths:
         - $HOME/.gradle/caches
@@ -79,21 +79,19 @@ workflows:
           find . -type f -name "*.aab" -maxdepth 6 -print -exec cp -f {} $CM_ARTIFACTS \; || true
 
   mm-whitelabel-ios:
-    name: Mattermost WhiteLabel iOS (App Store / TestFlight)
+    name: Mattermost WhiteLabel iOS (App Store)
     max_build_duration: 120
     instance_type: mac_mini_m2
-    # integrations:
-    #   app_store_connect: app_store_connect
     environment:
       groups:
         - mm_common
         - jboth_client
         - ios_match
       vars:
-        BUILD_FOR_RELEASE: "true"
-        REPLACE_ASSETS: "true"
-        FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT: "30"
-        FASTLANE_XCODEBUILD_SETTINGS_RETRIES: "5"
+        BUILD_FOR_RELEASE: 'true'
+        REPLACE_ASSETS: 'true'
+        FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT: '30'
+        FASTLANE_XCODEBUILD_SETTINGS_RETRIES: '6'
     cache:
       cache_paths:
         - $HOME/Library/Caches/CocoaPods
@@ -122,10 +120,11 @@ workflows:
           gem list -i cocoapods -v 1.16.1 || gem install cocoapods -v 1.16.1 --no-document
           unset RUBYOPT BUNDLE_GEMFILE BUNDLE_BIN_PATH BUNDLE_PATH BUNDLER_ORIG_PATH BUNDLER_ORIG_MANPATH || true
           echo "pod path: $(command -v pod || echo 'not found')"
-          env -i PATH="$PATH" GEM_HOME="$GEM_HOME" GEM_PATH="$GEM_PATH" HOME="$HOME" LANG="${LANG:-en_US.UTF-8}" pod _1.16.1_ --version
+          LANG="${LANG:-en_US.UTF-8}" pod _1.16.1_ --version
           echo "▶ npm ci"
           npm ci
-      - name: Ruby/Fastlane + CocoaPods（用固定的 1.16.1 执行）
+
+      - name: Ruby/Fastlane + Pod install（固定 1.16.1）
         script: |
           set -e
           if command -v rbenv >/dev/null 2>&1; then
@@ -139,8 +138,9 @@ workflows:
             trap 'mv .ruby-version.bak .ruby-version 2>/dev/null || true' EXIT
           fi
           cd ios
-          RBENV_VERSION="${RBENV_VERSION}"           GEM_HOME="$HOME/.gem" GEM_PATH="$HOME/.gem" HOME="$HOME" LANG="${LANG:-en_US.UTF-8}"           pod _1.16.1_ install --repo-update
-          cd -
+          GEM_HOME="$HOME/.gem" GEM_PATH="$HOME/.gem" LANG="${LANG:-en_US.UTF-8}" pod _1.16.1_ install --repo-update
+          cd ..
+
       - name: 🔧 Patch Pods project (TurboLogIOSNative module.modulemap hotfix)
         script: |
           set -euo pipefail
@@ -168,6 +168,7 @@ workflows:
             end
           RUBY
           cd ..
+
       - name: 配置证书库（HTTPS + Token）并自检
         script: |
           set -e
@@ -177,17 +178,32 @@ workflows:
           git -c credential.helper= ls-remote "$MATCH_GIT_URL" >/dev/null
           echo '✅ match 证书库可访问（HTTPS+Token）'
           export SIGH_GIT_URL="$MATCH_GIT_URL"
-      - name: 自检关键变量（不会泄露）
+
+      - name: 创建并切换到 fastlane 临时 keychain
         script: |
           set -e
-          check_var() { if [ -z "${!1}" ]; then echo "❌ MISSING $1"; exit 1; else echo "✅ $1 OK"; fi; }
-          check_var FASTLANE_TEAM_ID
-          check_var MATCH_USERNAME
-          check_var MATCH_PASSWORD
-          check_var MATCH_GIT_URL
-          check_var MATCH_APP_IDENTIFIER
-          check_var MATCH_TYPE
-      - name: 使用 match（只读）拉取证书与描述文件
+          : "${KEYCHAIN_PASSWORD:=$(uuidgen)}"
+          export KEYCHAIN_PASSWORD
+          gem install fastlane -v 2.228.0 --no-document || gem install fastlane --no-document
+          fastlane run create_keychain name:"fastlane_tmp_keychain" password:"$KEYCHAIN_PASSWORD" default_keychain:true unlock:true timeout:3600
+          CANDIDATES=(
+            "$HOME/Library/Keychains/fastlane_tmp_keychain-db"
+            "$HOME/Library/Keychains/fastlane_tmp_keychain.keychain-db"
+            "$HOME/Library/Keychains/fastlane_tmp_keychain"
+            "$HOME/Library/Keychains/fastlane_tmp_keychain.keychain"
+          )
+          for p in "${CANDIDATES[@]}"; do
+            if [ -e "$p" ] || [ -e "$p-db" ]; then
+              export KEYCHAIN_PATH="$p"
+              break
+            fi
+          done
+          echo "Using KEYCHAIN_PATH=${KEYCHAIN_PATH:-<not found>}"
+          security list-keychains
+          security default-keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" || true
+
+      - name: 使用 match 导入证书与描述文件（只读）
         script: |
           set -e
           if [ -f Gemfile ] && grep -qi 'fastlane' Gemfile; then
@@ -199,27 +215,22 @@ workflows:
             FL="fastlane"
           fi
           $FL --version
-          # 在非交互环境下通过 MATCH_PASSWORD 解密 repo
-          $FL run match             type:"appstore"             readonly:"true"             git_url:"$MATCH_GIT_URL"             app_identifier:"$MATCH_APP_IDENTIFIER"             team_id:"$FASTLANE_TEAM_ID"             keychain_name:"fastlane_tmp_keychain"             keychain_password:"$MATCH_PASSWORD"             verbose:true
+          $FL run match             type:"appstore"             readonly:true             git_url:"$MATCH_GIT_URL"             app_identifier:"com.jboth.mine,com.jboth.mine.MattermostShare,com.jboth.mine.NotificationService"             keychain_name:"$KEYCHAIN_PATH"             keychain_password:"$KEYCHAIN_PASSWORD"             verbose:true
+
       - name: 构建 iOS（使用仓库 lane）
         script: |
           set -e
-          export FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT="${FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT:-30}"
-          export FASTLANE_XCODEBUILD_SETTINGS_RETRIES="${FASTLANE_XCODEBUILD_SETTINGS_RETRIES:-5}"
           npm run build:ios
+
       - name: 收集制品
         script: |
           mkdir -p $CM_ARTIFACTS
           find . -type f -name "*.ipa" -maxdepth 6 -print -exec cp -f {} $CM_ARTIFACTS \; || true
+
     publishing:
       app_store_connect:
-        api_key: |
-          -----BEGIN PRIVATE KEY-----
-          MIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQgTHFCUEmtmzuEaG/T
-          zD5C5EBtEBsuWf54ZxCbWmpD/lugCgYIKoZIzj0DAQehRANCAAS6nYsA0zoFzGbY
-          t9rYpOKdcq0hG8zmImfhjOct0m609Z/J4fOcoxeLd3LJr4DAo6Kk+PBeCFBvrxIl
-          j5J7JvfX
-          -----END PRIVATE KEY-----
-        key_id: "UZ33M397NY"
-        issuer_id: "26e601c9-c2f0-497a-a9e1-39a426cecf9a"
+        auth: integration
         submit_to_testflight: true
+
+integrations:
+  app_store_connect: asc
