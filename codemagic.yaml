@@ -125,14 +125,12 @@ workflows:
         require 'xcodeproj'
         pods_proj_path = 'Pods/Pods.xcodeproj'
         proj = Xcodeproj::Project.open(pods_proj_path)
-
         changed = false
         targets = proj.targets.select { |t| t.name == 'TurboLogIOSNative' }
         if targets.empty?
           puts "ℹ️ Target TurboLogIOSNative not found, skipping"
         else
           targets.each do |t|
-            # 1) 从 Sources 阶段移除任何 *.modulemap
             phases = []
             phases << t.source_build_phase if t.respond_to?(:source_build_phase)
             phases << t.sources_build_phase if t.respond_to?(:sources_build_phase)
@@ -145,17 +143,13 @@ workflows:
                 puts "🧹 Removed #{fr.path} from Compile Sources of #{t.name}"
               end
             end
-
-            # 2) 防御性设置，避免再次被当作源码处理
             t.build_configurations.each do |cfg|
               cfg.build_settings['EXCLUDED_SOURCE_FILE_NAMES'] = '*/module.modulemap *.modulemap'
               cfg.build_settings['DEFINES_MODULE'] = 'YES'
-              # 提示 Xcode 这就是该 Pod 的 modulemap 路径（不会去编译它）
               cfg.build_settings['MODULEMAP_FILE'] = '$(SRCROOT)/TurboLogIOSNative/Sources/TurboLogSwift/module.modulemap'
             end
           end
         end
-
         if changed
           proj.save
           puts "✅ Patched TurboLogIOSNative in Pods.xcodeproj"
@@ -164,8 +158,20 @@ workflows:
         end
         RUBY
 
-        # 用 CocoaPods 自带的 xcodeproj gem 执行
+        # CocoaPods 安装的 xcodeproj gem 就能跑
         ruby patch_turblog.rb
+
+        # 兜底：如果 Ruby 失败，直接把 .modulemap 从 pbxproj 的 Sources 条目里扫掉
+        if [ $? -ne 0 ]; then
+          echo "⚠️ Ruby patch failed, applying sed fallback..."
+          PBX="Pods/Pods.xcodeproj/project.pbxproj"
+          cp "$PBX" "${PBX}.bak"
+          # 移除引用到 module.modulemap 的 PBXBuildFile 节点（尽量保守）
+          awk 'BEGIN{skip=0}
+              /module\.modulemap/ {skip=1}
+              skip && /\/\* End PBXBuildFile section \*\// {skip=0}
+              !skip {print}' "$PBX" > "${PBX}.tmp" && mv "${PBX}.tmp" "$PBX"
+        fi
         cd ..
 
 
@@ -260,6 +266,11 @@ workflows:
         echo "GYM_EXPORT_METHOD=$GYM_EXPORT_METHOD"
         echo "SIGH_PROFILE_TYPE=$SIGH_PROFILE_TYPE"
 
+    - name: 放宽 xcodebuild settings 超时
+      script: |
+        export FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT=120
+        echo "FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT=$FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT"
+
 
     - name: 构建 iOS（使用仓库 lane）
       script: 'set -e
@@ -267,6 +278,18 @@ workflows:
         npm run build:ios
 
         '
+    - name: 打印 gym 详细日志（若存在）
+      script: |
+        LOG="$HOME/Library/Logs/gym/Mattermost-Mattermost.log"
+        if [ -f "$LOG" ]; then
+          echo "===== BEGIN gym log ====="
+          tail -n +1 "$LOG" | sed -e 's/\r$//'
+          echo "===== END gym log ====="
+        else
+          echo "No gym log found at $LOG"
+        fi
+
+
     - name: 收集制品
       script: 'mkdir -p $CM_ARTIFACTS
 
