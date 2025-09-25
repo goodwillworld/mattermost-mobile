@@ -181,6 +181,66 @@ workflows:
             puts "✅ Removed #{removed} .modulemap entries from Compile Sources"
           RUBY
           cd ..
+
+      - name: 🔧 Patch Pods project（彻底移除 *.modulemap 被当源码）
+        script: |
+          set -euo pipefail
+          cd ios
+          ruby - <<'RUBY'
+            require 'xcodeproj'
+            path = 'Pods/Pods.xcodeproj'
+            abort("Pods project not found") unless File.exist?(path)
+            proj = Xcodeproj::Project.open(path)
+
+            # 限定或全局：优先处理 TurboLogIOSNative；若没找到则对所有 target 兜底清理
+            targets = proj.targets.select { |t| t.name == 'TurboLogIOSNative' }
+            targets = proj.targets if targets.empty?
+
+            removed = 0
+            targets.each do |t|
+              # 遍历所有已知 Build Phases：Sources/Headers/Resources/Scripts 等
+              phases = []
+              phases << t.sources_build_phase     if t.respond_to?(:sources_build_phase)     && t.sources_build_phase
+              phases << t.headers_build_phase     if t.respond_to?(:headers_build_phase)     && t.headers_build_phase
+              phases << t.resources_build_phase   if t.respond_to?(:resources_build_phase)   && t.resources_build_phase
+              phases << t.frameworks_build_phase  if t.respond_to?(:frameworks_build_phase)  && t.frameworks_build_phase
+              phases << t.copy_files_build_phases if t.respond_to?(:copy_files_build_phases) && t.copy_files_build_phases
+              phases = phases.flatten.compact
+
+              phases.each do |phase|
+                # 逐个 build_file 检查其 file_ref.path
+                phase.files.each do |bf|
+                  fr = bf.file_ref
+                  next unless fr && fr.path
+                  if fr.path.end_with?('.modulemap')
+                    phase.remove_build_file(bf)
+                    removed += 1
+                  end
+                end
+                # 一些 xcodeproj 版本需要这步来移除 dangling 引用
+                if phase.respond_to?(:files_references)
+                  phase.files_references.select { |fr|
+                    (fr.path || '').end_with?('.modulemap')
+                  }.each { |fr| phase.remove_file_reference(fr) }
+                end
+              end
+
+              # 额外加固：明确把 *.modulemap 从源码排除，避免将来被误收录
+              t.build_configurations.each do |cfg|
+                cur = cfg.build_settings['EXCLUDED_SOURCE_FILE_NAMES']
+                list = Array(cur).flat_map { |e| e.to_s.split(/\s+/) }
+                list |= ['*.modulemap', '*/module.modulemap']
+                cfg.build_settings['EXCLUDED_SOURCE_FILE_NAMES'] = list.join(' ')
+                # 对该 Pod 强制定义模块但由 Clang 处理模块映射（不当源码）
+                cfg.build_settings['DEFINES_MODULE'] = 'YES'
+              end
+            end
+
+            proj.save
+            puts "✅ Removed #{removed} .modulemap build entries"
+          RUBY
+          cd ..
+
       - name: 强制 gym 导出为 App Store（修补 Fastfile）
         script: |
           set -euo pipefail
