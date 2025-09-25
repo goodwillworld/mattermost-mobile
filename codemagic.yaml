@@ -10,9 +10,9 @@ workflows:
         - mm_common
         - jboth_client
       vars:
-        BUILD_FOR_RELEASE: 'true'
+        BUILD_FOR_RELEASE: "true"
         ANDROID_BUILD_TASK: assemble
-        REPLACE_ASSETS: 'true'
+        REPLACE_ASSETS: "true"
     cache:
       cache_paths:
         - $HOME/.gradle/caches
@@ -70,7 +70,11 @@ workflows:
         script: |
           set -e
           cd android
-          ./gradlew assembleRelease             -Pandroid.injected.signing.store.file="$CM_KEYSTORE_PATH"             -Pandroid.injected.signing.store.password="$CM_KEY_PASSWORD"             -Pandroid.injected.signing.key.alias="$CM_KEY_ALIAS"             -Pandroid.injected.signing.key.password="$CM_KEY_PASSWORD" || true
+          ./gradlew assembleRelease \
+            -Pandroid.injected.signing.store.file="$CM_KEYSTORE_PATH" \
+            -Pandroid.injected.signing.store.password="$CM_KEY_PASSWORD" \
+            -Pandroid.injected.signing.key.alias="$CM_KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$CM_KEY_PASSWORD" || true
           cd -
       - name: 收集制品（APK/AAB）
         script: |
@@ -79,7 +83,7 @@ workflows:
           find . -type f -name "*.aab" -maxdepth 6 -print -exec cp -f {} $CM_ARTIFACTS \; || true
 
   mm-whitelabel-ios:
-    name: Mattermost WhiteLabel iOS (App Store / TestFlight)
+    name: Mattermost WhiteLabel iOS (App Store/TestFlight)
     max_build_duration: 120
     instance_type: mac_mini_m2
     environment:
@@ -88,10 +92,10 @@ workflows:
         - jboth_client
         - ios_match
       vars:
-        BUILD_FOR_RELEASE: 'true'
-        REPLACE_ASSETS: 'true'
-        FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT: '20'
-        FASTLANE_XCODEBUILD_SETTINGS_RETRIES: '5'
+        BUILD_FOR_RELEASE: "true"
+        REPLACE_ASSETS: "true"
+        FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT: "30"
+        FASTLANE_XCODEBUILD_SETTINGS_RETRIES: "4"
     cache:
       cache_paths:
         - $HOME/Library/Caches/CocoaPods
@@ -122,13 +126,15 @@ workflows:
           gem list -i cocoapods -v 1.16.1 || gem install cocoapods -v 1.16.1 --no-document
           unset RUBYOPT BUNDLE_GEMFILE BUNDLE_BIN_PATH BUNDLE_PATH BUNDLER_ORIG_PATH BUNDLER_ORIG_MANPATH || true
           echo "pod path: $(command -v pod || echo 'not found')"
-          LANG="${LANG:-en_US.UTF-8}" env -i PATH="$PATH" GEM_HOME="$GEM_HOME" GEM_PATH="$GEM_PATH" HOME="$HOME" LANG="$LANG" pod _1.16.1_ --version
+          env -i PATH="$PATH" GEM_HOME="$GEM_HOME" GEM_PATH="$GEM_PATH" HOME="$HOME" LANG="${LANG:-en_US.UTF-8}" pod _1.16.1_ --version
 
           echo "▶ npm ci"
           npm ci
+
       - name: Ruby/Fastlane + CocoaPods（用固定的 1.16.1 执行）
         script: |
           set -e
+          # ① 强制 rbenv 使用已安装的 Ruby（覆盖 .ruby-version 的 3.2.0）
           if command -v rbenv >/dev/null 2>&1; then
             RB_INST="$(rbenv versions --bare | grep -E '^[0-9]+\.[0-9]+' | tail -1 || true)"
             export RBENV_VERSION="${RB_INST:-system}"
@@ -136,14 +142,19 @@ workflows:
           fi
           ruby -v || true
 
+          # ② 临时“屏蔽”仓库根的 .ruby-version
           if [ -f .ruby-version ]; then
             mv .ruby-version .ruby-version.bak
             trap 'mv .ruby-version.bak .ruby-version 2>/dev/null || true' EXIT
           fi
 
+          # ③ 使用我们已安装到 $HOME/.gem 的 CocoaPods 1.16.1（不走 bundler）
           cd ios
-          RBENV_VERSION="${RBENV_VERSION}" GEM_HOME="$HOME/.gem" GEM_PATH="$HOME/.gem" HOME="$HOME" LANG="${LANG:-en_US.UTF-8}" pod _1.16.1_ install --repo-update
-          cd -
+          RBENV_VERSION="${RBENV_VERSION}" \
+          GEM_HOME="$HOME/.gem" GEM_PATH="$HOME/.gem" HOME="$HOME" LANG="${LANG:-en_US.UTF-8}" \
+          pod _1.16.1_ install --repo-update
+          cd ..
+
       - name: 🔧 Patch Pods project (TurboLogIOSNative module.modulemap hotfix)
         script: |
           set -euo pipefail
@@ -158,7 +169,9 @@ workflows:
               targets.each do |t|
                 [t.respond_to?(:source_build_phase) ? t.source_build_phase : nil,
                  t.respond_to?(:sources_build_phase) ? t.sources_build_phase : nil].compact.each do |phase|
-                  phase.files_references.select { |fr| (fr.path || '').end_with?('.modulemap') }.each { |fr| phase.remove_file_reference(fr) }
+                  phase.files_references.select { |fr|
+                    (fr.path || '').end_with?('.modulemap')
+                  }.each { |fr| phase.remove_file_reference(fr) }
                 end
                 t.build_configurations.each do |cfg|
                   cfg.build_settings['EXCLUDED_SOURCE_FILE_NAMES'] = '*/module.modulemap *.modulemap'
@@ -171,6 +184,7 @@ workflows:
             end
           RUBY
           cd ..
+
       - name: 配置证书库（HTTPS + Token）并自检
         script: |
           set -e
@@ -180,6 +194,7 @@ workflows:
           git -c credential.helper= ls-remote "$MATCH_GIT_URL" >/dev/null
           echo '✅ match 证书库可访问（HTTPS+Token）'
           export SIGH_GIT_URL="$MATCH_GIT_URL"
+
       - name: 自检关键变量（不会泄露）
         script: |
           set -e
@@ -193,14 +208,27 @@ workflows:
           check_var ASC_KEY_ID
           check_var ASC_ISSUER_ID
           if [ -z "$ASC_PRIVATE_KEY" ]; then echo "❌ MISSING ASC_PRIVATE_KEY"; exit 1; else echo "✅ ASC_PRIVATE_KEY OK (hidden)"; fi
+
+      - name: 生成 ASC API Key（供 match/produce 使用）
+        script: |
+          set -e
+          python3 - <<'PY'
+          import os, json, pathlib
+          data = {
+            "key_id": os.environ["ASC_KEY_ID"].strip(),
+            "issuer_id": os.environ["ASC_ISSUER_ID"].strip(),
+            "key": os.environ["ASC_PRIVATE_KEY"].replace("\r\n","\n").replace("\r","\n"),
+            "in_house": False
+          }
+          pathlib.Path("asc_api_key.json").write_text(json.dumps(data))
+          PY
+          python3 -m json.tool asc_api_key.json >/dev/null && echo "✅ asc_api_key.json OK"
+
       - name: 若缺失则创建 App ID（使用 ASC API Key）
         script: |
           set -e
-          : "${ASC_KEY_ID:?缺少 ASC_KEY_ID}"
-          : "${ASC_ISSUER_ID:?缺少 ASC_ISSUER_ID}"
-          : "${ASC_PRIVATE_KEY:?缺少 ASC_PRIVATE_KEY}"
           : "${FASTLANE_TEAM_ID:?缺少 FASTLANE_TEAM_ID}"
-
+          # 安装 fastlane（按需）
           if [ -f Gemfile ] && grep -qi 'fastlane' Gemfile; then
             gem install bundler --no-document
             bundle install
@@ -210,18 +238,6 @@ workflows:
             FL="fastlane"
           fi
           $FL --version
-
-          python3 - <<'PY'
-          import os, json, sys
-          key=os.environ["ASC_PRIVATE_KEY"].replace("
-          ","
-          ").replace("
-          ","
-          ")
-          data={"key_id":os.environ["ASC_KEY_ID"].strip(),"issuer_id":os.environ["ASC_ISSUER_ID"].strip(),"key":key,"in_house":False}
-          open("asc_api_key.json","w").write(json.dumps(data))
-          PY
-          python3 -m json.tool asc_api_key.json >/dev/null && echo "✅ asc_api_key.json OK"
 
           APP_NAME_CN="${APP_NAME:-加步协同}"
           MAIN="com.jboth.mine"
@@ -231,28 +247,32 @@ workflows:
           create_if_missing() {
             local bid="$1"; local name="$2"
             echo "▶ 确保存在 App ID: $bid ($name)"
-            $FL run produce               app_identifier:"$bid"               app_name:"$name"               skip_itc:"true"               team_id:"$FASTLANE_TEAM_ID"               api_key_path:"asc_api_key.json"               run_if:"true"               verbose:true || true
+            $FL run produce \
+              app_identifier:"$bid" \
+              app_name:"$name" \
+              skip_itc:"true" \
+              team_id:"$FASTLANE_TEAM_ID" \
+              api_key_path:"asc_api_key.json" \
+              run_if:"true" \
+              verbose:true || true
           }
+
           create_if_missing "$MAIN"  "$APP_NAME_CN"
           create_if_missing "$SHARE" "${APP_NAME_CN} Share Extension"
           create_if_missing "$NTFY"  "${APP_NAME_CN} Notification Service"
           echo "✅ App IDs ensured."
+
       - name: 首次初始化签名（仅当证书库为空时执行）
         script: |
           set -e
           : "${MATCH_GIT_URL:?缺少 MATCH_GIT_URL}"
           : "${FASTLANE_TEAM_ID:?缺少 FASTLANE_TEAM_ID}"
           : "${MATCH_APP_IDENTIFIER:?缺少 MATCH_APP_IDENTIFIER（逗号分隔多个ID）}"
-          : "${ASC_KEY_ID:?缺少 ASC_KEY_ID}"
-          : "${ASC_ISSUER_ID:?缺少 ASC_ISSUER_ID}"
-          : "${ASC_PRIVATE_KEY:?缺少 ASC_PRIVATE_KEY}"
-
           if [ "$(git -c credential.helper= ls-remote --heads "$MATCH_GIT_URL" | wc -l | tr -d ' ')" -gt 0 ]; then
             echo "ℹ️ 证书库非空，跳过初始化"
             exit 0
           fi
           echo "🆕 空仓库：执行首轮初始化（创建证书/描述文件并 push）"
-
           if [ -f Gemfile ] && grep -qi 'fastlane' Gemfile; then
             gem install bundler --no-document
             bundle install
@@ -263,38 +283,36 @@ workflows:
           fi
           $FL --version
 
-          python3 - <<'PY'
-          import os, json, sys
-          key=os.environ["ASC_PRIVATE_KEY"].replace("
-          ","
-          ").replace("
-          ","
-          ")
-          data={"key_id":os.environ["ASC_KEY_ID"].strip(),"issuer_id":os.environ["ASC_ISSUER_ID"].strip(),"key":key,"in_house":False}
-          open("asc_api_key.json","w").write(json.dumps(data))
-          PY
-          python3 -m json.tool asc_api_key.json >/dev/null && echo "✅ asc_api_key.json OK"
-
           KEYCHAIN_PWD="${KEYCHAIN_PWD:-$(uuidgen)}"
           $FL run create_keychain name:"cm_tmp" password:"$KEYCHAIN_PWD" default_keychain:true unlock:true timeout:3600
 
           git config --global user.email "codemagic@local"
           git config --global user.name  "Codemagic CI"
 
-          $FL run match             type:"appstore"             readonly:"false"             git_url:"$MATCH_GIT_URL"             app_identifier:"$MATCH_APP_IDENTIFIER"             team_id:"$FASTLANE_TEAM_ID"             api_key_path:"asc_api_key.json"             keychain_name:"cm_tmp"             keychain_password:"$KEYCHAIN_PWD"             verbose:true
+          $FL run match \
+            type:"appstore" \
+            readonly:"false" \
+            git_url:"$MATCH_GIT_URL" \
+            app_identifier:"$MATCH_APP_IDENTIFIER" \
+            team_id:"$FASTLANE_TEAM_ID" \
+            api_key_path:"asc_api_key.json" \
+            keychain_name:"cm_tmp" \
+            keychain_password:"$KEYCHAIN_PWD" \
+            verbose:true
+
           echo "✅ 初始化完成：后续 match 可只读"
+
       - name: 构建 iOS（使用仓库 lane）
         script: |
           set -e
-          export FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT="${FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT:-20}"
-          export FASTLANE_XCODEBUILD_SETTINGS_RETRIES="${FASTLANE_XCODEBUILD_SETTINGS_RETRIES:-5}"
           npm run build:ios
+
       - name: 收集制品
         script: |
           mkdir -p $CM_ARTIFACTS
           find . -type f -name "*.ipa" -maxdepth 6 -print -exec cp -f {} $CM_ARTIFACTS \; || true
+
     publishing:
       app_store_connect:
         auth: integration
-        integration: $ASC_INTEGRATION
         submit_to_testflight: true
