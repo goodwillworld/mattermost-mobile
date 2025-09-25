@@ -148,39 +148,6 @@ workflows:
           cd ios
           RBENV_VERSION="${RBENV_VERSION}" GEM_HOME="$HOME/.gem" GEM_PATH="$HOME/.gem" HOME="$HOME" LANG="${LANG:-en_US.UTF-8}" pod _1.16.1_ install --repo-update
           cd ..
-      - name: 🔧 Patch Pods project（清理 *.modulemap 被当源码）
-        script: |
-          set -euo pipefail
-          cd ios
-          ruby - <<'RUBY'
-            require 'xcodeproj'
-            path = 'Pods/Pods.xcodeproj'
-            abort("Pods project not found") unless File.exist?(path)
-            proj = Xcodeproj::Project.open(path)
-            removed = 0
-            proj.targets.each do |t|
-              phases = []
-              phases << t.sources_build_phase if t.respond_to?(:sources_build_phase) && t.sources_build_phase
-              phases << t.source_build_phase  if t.respond_to?(:source_build_phase)  && t.source_build_phase
-              phases.compact.each do |phase|
-                phase.files_references.select { |fr|
-                  (fr.path || '').end_with?('.modulemap')
-                }.each do |fr|
-                  phase.remove_file_reference(fr)
-                  removed += 1
-                end
-              end
-              t.build_configurations.each do |cfg|
-                cur = cfg.build_settings['EXCLUDED_SOURCE_FILE_NAMES']
-                list = Array(cur).flat_map { |e| e.to_s.split(/\s+/) }
-                list |= ['*.modulemap', '*/module.modulemap']
-                cfg.build_settings['EXCLUDED_SOURCE_FILE_NAMES'] = list.join(' ')
-              end
-            end
-            proj.save
-            puts "✅ Removed #{removed} .modulemap entries from Compile Sources"
-          RUBY
-          cd ..
 
       - name: 🔧 Patch Pods project（彻底移除 *.modulemap 被当源码）
         script: |
