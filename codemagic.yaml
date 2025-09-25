@@ -82,8 +82,8 @@ workflows:
     name: Mattermost WhiteLabel iOS (App Store / TestFlight)
     max_build_duration: 120
     instance_type: mac_mini_m2
-    integrations:
-      app_store_connect: my_app_store_connect
+    # integrations:
+    #   app_store_connect: app_store_connect
     environment:
       groups:
         - mm_common
@@ -213,5 +213,13 @@ workflows:
           find . -type f -name "*.ipa" -maxdepth 6 -print -exec cp -f {} $CM_ARTIFACTS \; || true
     publishing:
       app_store_connect:
-        auth: integration
+        api_key: |
+          -----BEGIN PRIVATE KEY-----
+          MIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQgTHFCUEmtmzuEaG/T
+          zD5C5EBtEBsuWf54ZxCbWmpD/lugCgYIKoZIzj0DAQehRANCAAS6nYsA0zoFzGbY
+          t9rYpOKdcq0hG8zmImfhjOct0m609Z/J4fOcoxeLd3LJr4DAo6Kk+PBeCFBvrxIl
+          j5J7JvfX
+          -----END PRIVATE KEY-----
+        key_id: "UZ33M397NY"
+        issuer_id: "26e601c9-c2f0-497a-a9e1-39a426cecf9a"
         submit_to_testflight: true
