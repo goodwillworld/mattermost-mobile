@@ -218,21 +218,23 @@ workflows:
           cd ..
 
 
-      - name: 强制 gym 导出为 App Store（修补 Fastfile）
-        script: |
-          set -euo pipefail
-          FF="fastlane/Fastfile"
-          if [ -f "$FF" ]; then
-            echo "▶ Patching $FF export_method -> app-store"
-            perl -0777 -pe "s/export_method:\s*['\"]ad-?hoc['\"]/export_method: 'app-store'/g" -i "$FF"
-            perl -0777 -pe "s/export_method:\s*:ad_?hoc/export_method: :app_store/g" -i "$FF"
-            echo "✅ Fastfile patched"
-          else
-            echo "ℹ️ No Fastfile at $FF, skipping"
-          fi
-          export GYM_EXPORT_METHOD=app-store
-          export SIGH_PROFILE_TYPE=app-store
-          export MATCH_TYPE=appstore
+      # - name: 强制 gym 导出为 App Store（修补 Fastfile）
+      #   script: |
+      #     set -euo pipefail
+      #     FF="fastlane/Fastfile"
+      #     if [ -f "$FF" ]; then
+      #       echo "▶ Patching $FF export_method -> app-store"
+      #       perl -0777 -pe "s/export_method:\s*['\"]ad-?hoc['\"]/export_method: 'app-store'/g" -i "$FF"
+      #       perl -0777 -pe "s/export_method:\s*:ad_?hoc/export_method: :app_store/g" -i "$FF"
+      #       echo "✅ Fastfile patched"
+      #     else
+      #       echo "ℹ️ No Fastfile at $FF, skipping"
+      #     fi
+      #     export GYM_EXPORT_METHOD=app-store
+      #     export SIGH_PROFILE_TYPE=app-store
+      #     export MATCH_TYPE=appstore
+
+
       - name: 配置证书库（HTTPS+Token）并自检
         script: |
           set -e
