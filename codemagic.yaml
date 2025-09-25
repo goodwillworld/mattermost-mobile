@@ -10,9 +10,9 @@ workflows:
         - mm_common
         - jboth_client
       vars:
-        BUILD_FOR_RELEASE: "true"
+        BUILD_FOR_RELEASE: 'true'
         ANDROID_BUILD_TASK: assemble
-        REPLACE_ASSETS: "true"
+        REPLACE_ASSETS: 'true'
     cache:
       cache_paths:
         - $HOME/.gradle/caches
@@ -70,7 +70,11 @@ workflows:
         script: |
           set -e
           cd android
-          ./gradlew assembleRelease             -Pandroid.injected.signing.store.file="$CM_KEYSTORE_PATH"             -Pandroid.injected.signing.store.password="$CM_KEY_PASSWORD"             -Pandroid.injected.signing.key.alias="$CM_KEY_ALIAS"             -Pandroid.injected.signing.key.password="$CM_KEY_PASSWORD" || true
+          ./gradlew assembleRelease \
+            -Pandroid.injected.signing.store.file="$CM_KEYSTORE_PATH" \
+            -Pandroid.injected.signing.store.password="$CM_KEY_PASSWORD" \
+            -Pandroid.injected.signing.key.alias="$CM_KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$CM_KEY_PASSWORD" || true
           cd -
       - name: 收集制品（APK/AAB）
         script: |
@@ -79,7 +83,7 @@ workflows:
           find . -type f -name "*.aab" -maxdepth 6 -print -exec cp -f {} $CM_ARTIFACTS \; || true
 
   mm-whitelabel-ios:
-    name: Mattermost WhiteLabel iOS (App Store)
+    name: Mattermost WhiteLabel iOS (App Store/TestFlight)
     max_build_duration: 120
     instance_type: mac_mini_m2
     environment:
@@ -90,7 +94,9 @@ workflows:
       vars:
         BUILD_FOR_RELEASE: 'true'
         REPLACE_ASSETS: 'true'
-        EXPORT_METHOD: app-store
+        # 兜底强制为 App Store（避免 ad-hoc 冲突）
+        GYM_EXPORT_METHOD: app-store
+        SIGH_PROFILE_TYPE: app-store
         MATCH_TYPE: appstore
     cache:
       cache_paths:
@@ -101,107 +107,150 @@ workflows:
       - name: 环境与依赖（Node + watchman + CocoaPods 1.16.1）
         script: |
           set -e
-          echo "▶ Node"
+          echo "▶ Using system Node"
           which node || true
           node -v || true
           npm -v || true
-          echo "▶ Install watchman"
+
+          echo "▶ Install watchman（Solidarity 需要）"
           if command -v brew >/dev/null 2>&1; then
             eval "$(/opt/homebrew/bin/brew shellenv)" || true
             brew list watchman >/dev/null 2>&1 || brew install watchman
             watchman --version || true
           else
-            echo "❌ Homebrew 未找到"; exit 1
+            echo "❌ Homebrew 未找到，无法安装 watchman"; exit 1
           fi
-          echo "▶ CocoaPods 1.16.1"
+
+          echo "▶ Pin CocoaPods 1.16.1（用户 gem 目录）"
           export GEM_HOME="$HOME/.gem"
           export GEM_PATH="$GEM_HOME"
           export PATH="$GEM_HOME/bin:$PATH"
           gem list -i cocoapods -v 1.16.1 || gem install cocoapods -v 1.16.1 --no-document
-          export LANG="${LANG:-en_US.UTF-8}"
+          unset RUBYOPT BUNDLE_GEMFILE BUNDLE_BIN_PATH BUNDLE_PATH BUNDLER_ORIG_PATH BUNDLER_ORIG_MANPATH || true
           echo "pod path: $(command -v pod || echo 'not found')"
+          env -i PATH="$PATH" GEM_HOME="$GEM_HOME" GEM_PATH="$GEM_PATH" HOME="$HOME" LANG="${LANG:-en_US.UTF-8}" pod _1.16.1_ --version
+
+          echo "▶ npm ci"
           npm ci
+      - name: Ruby/Fastlane + CocoaPods（用固定的 1.16.1 执行）
+        script: |
+          set -e
+          if command -v rbenv >/dev/null 2>&1; then
+            RB_INST="$(rbenv versions --bare | grep -E '^[0-9]+\.[0-9]+' | tail -1 || true)"
+            export RBENV_VERSION="${RB_INST:-system}"
+            echo "Using rbenv Ruby: ${RBENV_VERSION}"
+          fi
+          ruby -v || true
+          if [ -f .ruby-version ]; then
+            mv .ruby-version .ruby-version.bak
+            trap 'mv .ruby-version.bak .ruby-version 2>/dev/null || true' EXIT
+          fi
           cd ios
-          pod _1.16.1_ install --repo-update
-          cd -
-      - name: 🔧 Patch Pods project (TurboLogIOSNative module.modulemap hotfix)
+          RBENV_VERSION="${RBENV_VERSION}" GEM_HOME="$HOME/.gem" GEM_PATH="$HOME/.gem" HOME="$HOME" LANG="${LANG:-en_US.UTF-8}" pod _1.16.1_ install --repo-update
+          cd ..
+      - name: 🔧 Patch Pods project（清理 *.modulemap 被当源码）
         script: |
           set -euo pipefail
           cd ios
           ruby - <<'RUBY'
             require 'xcodeproj'
-            proj_path = 'Pods/Pods.xcodeproj'
-            proj = Xcodeproj::Project.open(proj_path)
-            targets = proj.targets.select { |t| t.name == 'TurboLogIOSNative' }
-            if targets.empty?
-              puts "ℹ️ Target TurboLogIOSNative not found, skipping"
-            else
-              targets.each do |t|
-                # Remove any *.modulemap from Compile Sources
-                phases = []
-                phases << (t.respond_to?(:source_build_phase) ? t.source_build_phase : nil)
-                phases << (t.respond_to?(:sources_build_phase) ? t.sources_build_phase : nil)
-                phases.compact.each do |phase|
-                  phase.files_references
-                       .select { |fr| (fr.path || '').end_with?('.modulemap') }
-                       .each   { |fr| phase.remove_file_reference(fr) }
-                end
-                # Harden build settings
-                t.build_configurations.each do |cfg|
-                  cfg.build_settings['EXCLUDED_SOURCE_FILE_NAMES'] = '*/module.modulemap *.modulemap'
-                  cfg.build_settings['MODULEMAP_FILE'] = '$(SRCROOT)/TurboLogIOSNative/Sources/TurboLogSwift/module.modulemap'
-                  cfg.build_settings['DEFINES_MODULE'] = 'YES'
+            path = 'Pods/Pods.xcodeproj'
+            abort("Pods project not found") unless File.exist?(path)
+            proj = Xcodeproj::Project.open(path)
+            removed = 0
+            proj.targets.each do |t|
+              phases = []
+              phases << t.sources_build_phase if t.respond_to?(:sources_build_phase) && t.sources_build_phase
+              phases << t.source_build_phase  if t.respond_to?(:source_build_phase)  && t.source_build_phase
+              phases.compact.each do |phase|
+                phase.files_references.select { |fr|
+                  (fr.path || '').end_with?('.modulemap')
+                }.each do |fr|
+                  phase.remove_file_reference(fr)
+                  removed += 1
                 end
               end
-              proj.save
-              puts "✅ Patched TurboLogIOSNative in Pods.xcodeproj"
+              t.build_configurations.each do |cfg|
+                cur = cfg.build_settings['EXCLUDED_SOURCE_FILE_NAMES']
+                list = Array(cur).flat_map { |e| e.to_s.split(/\s+/) }
+                list |= ['*.modulemap', '*/module.modulemap']
+                cfg.build_settings['EXCLUDED_SOURCE_FILE_NAMES'] = list.join(' ')
+              end
             end
+            proj.save
+            puts "✅ Removed #{removed} .modulemap entries from Compile Sources"
           RUBY
-          cd -
-      - name: 生成 ASC API Key（供 match/gym 使用）
+          cd ..
+      - name: 强制 gym 导出为 App Store（修补 Fastfile）
         script: |
-          set -e
-          python3 - <<'PY'
-          import os, json
-          data = {
-            "key_id": os.environ["ASC_KEY_ID"].strip(),
-            "issuer_id": os.environ["ASC_ISSUER_ID"].strip(),
-            "key": os.environ["ASC_PRIVATE_KEY"].replace("\r\n", "\n").replace("\r", "\n"),
-            "in_house": False
-          }
-          open("asc_api_key.json","w").write(json.dumps(data))
-          PY
-          python3 -m json.tool asc_api_key.json >/dev/null 2>&1 || { echo "asc_api_key.json invalid"; exit 1; }
-      - name: 配置证书库（HTTPS + Token）并写入后续步骤环境
+          set -euo pipefail
+          FF="fastlane/Fastfile"
+          if [ -f "$FF" ]; then
+            echo "▶ Patching $FF export_method -> app-store"
+            perl -0777 -pe "s/export_method:\s*['\"]ad-?hoc['\"]/export_method: 'app-store'/g" -i "$FF"
+            perl -0777 -pe "s/export_method:\s*:ad_?hoc/export_method: :app_store/g" -i "$FF"
+            echo "✅ Fastfile patched"
+          else
+            echo "ℹ️ No Fastfile at $FF, skipping"
+          fi
+          export GYM_EXPORT_METHOD=app-store
+          export SIGH_PROFILE_TYPE=app-store
+          export MATCH_TYPE=appstore
+      - name: 配置证书库（HTTPS+Token）并自检
         script: |
           set -e
           if [ -z "${GITHUB_PAT:-}" ]; then echo '❌ 缺少 GITHUB_PAT'; exit 1; fi
-          URL="https://${GITHUB_PAT}@github.com/goodwillworld/ios-certs.git"
-          git -c credential.helper= ls-remote "$URL" >/dev/null
-          echo "MATCH_GIT_URL=$URL" >> "$CM_ENV"
-          echo "SIGH_GIT_URL=$URL" >> "$CM_ENV"
-          echo "✅ match 证书库可访问，并已写入环境"
-      - name: 自检关键变量（不会泄露）
+          export MATCH_GIT_URL="https://${GITHUB_PAT}@github.com/goodwillworld/ios-certs.git"
+          echo 'MATCH_GIT_URL set (token masked)'
+          git -c credential.helper= ls-remote "$MATCH_GIT_URL" >/dev/null
+          echo '✅ match 证书库可访问'
+          export SIGH_GIT_URL="$MATCH_GIT_URL"
+      - name: 生成 ASC API Key（供 match/gym 使用）
         script: |
           set -e
-          need() { if [ -z "${!1:-}" ]; then echo "❌ MISSING $1"; exit 1; else echo "✅ $1 OK"; fi; }
-          need FASTLANE_TEAM_ID
-          need MATCH_USERNAME
-          need MATCH_PASSWORD
-          need MATCH_APP_IDENTIFIER
-          need MATCH_TYPE
-          need ASC_KEY_ID
-          need ASC_ISSUER_ID
-          if [ -z "${ASC_PRIVATE_KEY:-}" ]; then echo "❌ MISSING ASC_PRIVATE_KEY"; exit 1; else echo "✅ ASC_PRIVATE_KEY OK (hidden)"; fi
+          : "${ASC_KEY_ID:?缺少 ASC_KEY_ID}"
+          : "${ASC_ISSUER_ID:?缺少 ASC_ISSUER_ID}"
+          : "${ASC_PRIVATE_KEY:?缺少 ASC_PRIVATE_KEY}"
+          python3 - <<'PY'
+          import os, json, sys
+          kid=os.environ["ASC_KEY_ID"].strip()
+          iid=os.environ["ASC_ISSUER_ID"].strip()
+          key=os.environ["ASC_PRIVATE_KEY"].replace("\r\n","\n").replace("\r","\n")
+          data={"key_id":kid,"issuer_id":iid,"key":key,"in_house":False}
+          open("asc_api_key.json","w").write(json.dumps(data))
+          PY
+          python3 -m json.tool asc_api_key.json >/dev/null && echo "✅ asc_api_key.json OK"
+      - name: 拉取 App Store 描述文件（readonly）
+        script: |
+          set -e
+          if [ -f Gemfile ] && grep -qi 'fastlane' Gemfile; then
+            gem install bundler --no-document
+            bundle install
+            FL="bundle exec fastlane"
+          else
+            gem install fastlane -v 2.228.0 --no-document || gem install fastlane --no-document
+            FL="fastlane"
+          fi
+          $FL --version
+          KEYCHAIN_PWD="${KEYCHAIN_PWD:-$(uuidgen)}"
+          $FL run create_keychain name:"cm_tmp" password:"$KEYCHAIN_PWD" default_keychain:true unlock:true timeout:3600
+          $FL run match \
+            type:"appstore" \
+            readonly:"true" \
+            git_url:"$MATCH_GIT_URL" \
+            team_id:"$FASTLANE_TEAM_ID" \
+            api_key_path:"asc_api_key.json" \
+            keychain_name:"cm_tmp" \
+            keychain_password:"$KEYCHAIN_PWD" \
+            verbose:true
       - name: 构建 iOS（使用仓库 lane）
         script: |
           set -e
           npm run build:ios
       - name: 收集制品
         script: |
-          set -e
-          mkdir -p "$CM_ARTIFACTS"
-          find . -type f -name "*.ipa" -maxdepth 6 -print -exec cp -f {} "$CM_ARTIFACTS" \; || true
+          mkdir -p $CM_ARTIFACTS
+          find . -type f -name "*.ipa" -maxdepth 6 -print -exec cp -f {} $CM_ARTIFACTS \; || true
     publishing:
       app_store_connect:
         api_key: $ASC_PRIVATE_KEY
