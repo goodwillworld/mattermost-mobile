@@ -10,9 +10,9 @@ workflows:
         - mm_common
         - jboth_client
       vars:
-        BUILD_FOR_RELEASE: 'true'
+        BUILD_FOR_RELEASE: "true"
         ANDROID_BUILD_TASK: assemble
-        REPLACE_ASSETS: 'true'
+        REPLACE_ASSETS: "true"
     cache:
       cache_paths:
         - $HOME/.gradle/caches
@@ -48,11 +48,11 @@ workflows:
           CFG=assets/override/config.json
           if [ ! -f "$CFG" ]; then
             cat > "$CFG" <<'JSON'
-          {
-            "DefaultServerUrl": "https://hello.jboth.com",
-            "AutoSelectServerUrl": true
-          }
-          JSON
+            {
+              "DefaultServerUrl": "https://hello.jboth.com",
+              "AutoSelectServerUrl": true
+            }
+            JSON
             echo "Created $CFG with default server URL."
           else
             echo "Found existing $CFG, keep your repo version."
@@ -70,7 +70,11 @@ workflows:
         script: |
           set -e
           cd android
-          ./gradlew assembleRelease             -Pandroid.injected.signing.store.file="$CM_KEYSTORE_PATH"             -Pandroid.injected.signing.store.password="$CM_KEY_PASSWORD"             -Pandroid.injected.signing.key.alias="$CM_KEY_ALIAS"             -Pandroid.injected.signing.key.password="$CM_KEY_PASSWORD" || true
+          ./gradlew assembleRelease \
+            -Pandroid.injected.signing.store.file="$CM_KEYSTORE_PATH" \
+            -Pandroid.injected.signing.store.password="$CM_KEY_PASSWORD" \
+            -Pandroid.injected.signing.key.alias="$CM_KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$CM_KEY_PASSWORD" || true
           cd -
       - name: 收集制品（APK/AAB）
         script: |
@@ -88,16 +92,25 @@ workflows:
         - jboth_client
         - ios_match
       vars:
-        BUILD_FOR_RELEASE: 'true'
-        REPLACE_ASSETS: 'true'
-        FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT: '180'
-        FASTLANE_XCODEBUILD_SETTINGS_RETRIES: '1'
+        BUILD_FOR_RELEASE: "true"
+        REPLACE_ASSETS: "true"
+        FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT: "20"
+        FASTLANE_XCODEBUILD_SETTINGS_RETRIES: "6"
     cache:
       cache_paths:
         - $HOME/Library/Caches/CocoaPods
         - ios/Pods
         - node_modules
     scripts:
+      - name: 预热 Xcode（避免首次解析花太久）
+        script: |
+          set -e
+          sudo xcode-select -s /Applications/Xcode-16.4.app
+          xcodebuild -version
+          # 预拉取 SPM 索引（忽略失败）
+          if [ -d ios ]; then
+            (cd ios && xcodebuild -resolvePackageDependencies -workspace Mattermost.xcworkspace -scheme Mattermost -clonedSourcePackagesDirPath "$HOME/.spm" || true)
+          fi
       - name: 环境与依赖（Node + watchman + CocoaPods 1.16.1）
         script: |
           set -e
@@ -105,6 +118,7 @@ workflows:
           which node || true
           node -v || true
           npm -v || true
+
           echo "▶ Install watchman（Solidarity 需要）"
           if command -v brew >/dev/null 2>&1; then
             eval "$(/opt/homebrew/bin/brew shellenv)" || true
@@ -113,6 +127,7 @@ workflows:
           else
             echo "❌ Homebrew 未找到，无法安装 watchman"; exit 1
           fi
+
           echo "▶ Pin CocoaPods 1.16.1（用户 gem 目录）"
           export GEM_HOME="$HOME/.gem"
           export GEM_PATH="$GEM_HOME"
@@ -121,6 +136,7 @@ workflows:
           unset RUBYOPT BUNDLE_GEMFILE BUNDLE_BIN_PATH BUNDLE_PATH BUNDLER_ORIG_PATH BUNDLER_ORIG_MANPATH || true
           echo "pod path: $(command -v pod || echo 'not found')"
           env -i PATH="$PATH" GEM_HOME="$GEM_HOME" GEM_PATH="$GEM_PATH" HOME="$HOME" LANG="${LANG:-en_US.UTF-8}" pod _1.16.1_ --version
+
           echo "▶ npm ci"
           npm ci
       - name: Ruby/Fastlane + CocoaPods（用固定的 1.16.1 执行）
@@ -137,8 +153,10 @@ workflows:
             trap 'mv .ruby-version.bak .ruby-version 2>/dev/null || true' EXIT
           fi
           cd ios
-          RBENV_VERSION="${RBENV_VERSION}" GEM_HOME="$HOME/.gem" GEM_PATH="$HOME/.gem" HOME="$HOME" LANG="${LANG:-en_US.UTF-8}" pod _1.16.1_ install --repo-update
-          cd -
+          RBENV_VERSION="${RBENV_VERSION}" \
+          GEM_HOME="$HOME/.gem" GEM_PATH="$HOME/.gem" HOME="$HOME" LANG="${LANG:-en_US.UTF-8}" \
+          pod _1.16.1_ install --repo-update
+          cd ..
       - name: 🔧 Patch Pods project (TurboLogIOSNative module.modulemap hotfix)
         script: |
           set -euo pipefail
@@ -204,29 +222,44 @@ workflows:
             FL="fastlane"
           fi
           $FL --version
+
+          # ✅ 安全创建 asc_api_key.json（避免 Python 引号转义问题）
           python3 - <<'PY'
-          import os, json
-          data={"key_id":os.environ["ASC_KEY_ID"].strip(),"issuer_id":os.environ["ASC_ISSUER_ID"].strip(),"key":os.environ["ASC_PRIVATE_KEY"].replace("
-          ","
-          ").replace("
-          ","
-          "),"in_house":False}
-          open("asc_api_key.json","w").write(json.dumps(data))
-          PY
+import os, json, sys
+data = {
+  "key_id": os.environ["ASC_KEY_ID"].strip(),
+  "issuer_id": os.environ["ASC_ISSUER_ID"].strip(),
+  "key": os.environ["ASC_PRIVATE_KEY"].replace("\r\n","\n").replace("\r","\n"),
+  "in_house": False
+}
+with open("asc_api_key.json","w") as f:
+  json.dump(data, f)
+PY
           python3 -m json.tool asc_api_key.json >/dev/null && echo "✅ asc_api_key.json OK"
+
           APP_NAME_CN="${APP_NAME:-加步协同}"
           MAIN="com.jboth.mine"
           SHARE="com.jboth.mine.MattermostShare"
           NTFY="com.jboth.mine.NotificationService"
+
           create_if_missing() {
             local bid="$1"; local name="$2"
             echo "▶ 确保存在 App ID: $bid ($name)"
-            $FL run produce app_identifier:"$bid" app_name:"$name" skip_itc:"true" team_id:"$FASTLANE_TEAM_ID" api_key_path:"asc_api_key.json" run_if:"true" verbose:true || true
+            $FL run produce \
+              app_identifier:"$bid" \
+              app_name:"$name" \
+              skip_itc:"true" \
+              team_id:"$FASTLANE_TEAM_ID" \
+              api_key_path:"asc_api_key.json" \
+              run_if:"true" \
+              verbose:true || true
           }
+
           create_if_missing "$MAIN"  "$APP_NAME_CN"
           create_if_missing "$SHARE" "${APP_NAME_CN} Share Extension"
           create_if_missing "$NTFY"  "${APP_NAME_CN} Notification Service"
           echo "✅ App IDs ensured."
+
       - name: 首次初始化签名（仅当证书库为空时执行）
         script: |
           set -e
@@ -236,10 +269,13 @@ workflows:
           : "${ASC_KEY_ID:?缺少 ASC_KEY_ID}"
           : "${ASC_ISSUER_ID:?缺少 ASC_ISSUER_ID}"
           : "${ASC_PRIVATE_KEY:?缺少 ASC_PRIVATE_KEY}"
+
           if [ "$(git -c credential.helper= ls-remote --heads "$MATCH_GIT_URL" | wc -l | tr -d ' ')" -gt 0 ]; then
-            echo "ℹ️ 证书库非空，跳过初始化"; exit 0
+            echo "ℹ️ 证书库非空，跳过初始化"
+            exit 0
           fi
           echo "🆕 空仓库：执行首轮初始化（创建证书/描述文件并 push）"
+
           if [ -f Gemfile ] && grep -qi 'fastlane' Gemfile; then
             gem install bundler --no-document
             bundle install
@@ -249,41 +285,52 @@ workflows:
             FL="fastlane"
           fi
           $FL --version
+
           python3 - <<'PY'
-          import os, json
-          data={"key_id":os.environ["ASC_KEY_ID"].strip(),"issuer_id":os.environ["ASC_ISSUER_ID"].strip(),"key":os.environ["ASC_PRIVATE_KEY"].replace("
-          ","
-          ").replace("
-          ","
-          "),"in_house":False}
-          open("asc_api_key.json","w").write(json.dumps(data))
-          PY
+import os, json
+data = {
+  "key_id": os.environ["ASC_KEY_ID"].strip(),
+  "issuer_id": os.environ["ASC_ISSUER_ID"].strip(),
+  "key": os.environ["ASC_PRIVATE_KEY"].replace("\r\n","\n").replace("\r","\n"),
+  "in_house": False
+}
+open("asc_api_key.json","w").write(json.dumps(data))
+PY
           python3 -m json.tool asc_api_key.json >/dev/null && echo "✅ asc_api_key.json OK"
+
           KEYCHAIN_PWD="${KEYCHAIN_PWD:-$(uuidgen)}"
           $FL run create_keychain name:"cm_tmp" password:"$KEYCHAIN_PWD" default_keychain:true unlock:true timeout:3600
+
           git config --global user.email "codemagic@local"
           git config --global user.name  "Codemagic CI"
-          $FL run match type:"appstore" readonly:"false" git_url:"$MATCH_GIT_URL" app_identifier:"$MATCH_APP_IDENTIFIER" team_id:"$FASTLANE_TEAM_ID" api_key_path:"asc_api_key.json" keychain_name:"cm_tmp" keychain_password:"$KEYCHAIN_PWD" verbose:true
+
+          $FL run match \
+            type:"appstore" \
+            readonly:"false" \
+            git_url:"$MATCH_GIT_URL" \
+            app_identifier:"$MATCH_APP_IDENTIFIER" \
+            team_id:"$FASTLANE_TEAM_ID" \
+            api_key_path:"asc_api_key.json" \
+            keychain_name:"cm_tmp" \
+            keychain_password:"$KEYCHAIN_PWD" \
+            verbose:true
+
           echo "✅ 初始化完成：后续 match 可只读"
-      - name: 预热 Xcode & 解析 SPM（避免 showBuildSettings 超时）
-        script: |
-          set -e
-          export DEVELOPER_DIR="/Applications/Xcode-16.4.app/Contents/Developer"
-          echo "Using DEVELOPER_DIR=$DEVELOPER_DIR"
-          xcodebuild -resolvePackageDependencies -workspace ./ios/Mattermost.xcworkspace -scheme Mattermost -configuration Release
-          xcodebuild -list -workspace ./ios/Mattermost.xcworkspace || true
-          xcodebuild -showBuildSettings -workspace ./ios/Mattermost.xcworkspace -scheme Mattermost -configuration Release | head -n 80 || true
+
       - name: 构建 iOS（使用仓库 lane）
         script: |
           set -e
           npm run build:ios
-      - name: 收集制品
+
+      - name: 收集制品（IPA）
         script: |
           mkdir -p $CM_ARTIFACTS
           find . -type f -name "*.ipa" -maxdepth 6 -print -exec cp -f {} $CM_ARTIFACTS \; || true
+
     publishing:
       app_store_connect:
-        api_key: ${ASC_PRIVATE_KEY}
-        key_id: ${ASC_KEY_ID}
-        issuer_id: ${ASC_ISSUER_ID}
+        auth: api_key
+        key_id: $ASC_KEY_ID
+        issuer_id: $ASC_ISSUER_ID
+        private_key: $ASC_PRIVATE_KEY
         submit_to_testflight: true
