@@ -5,337 +5,229 @@ workflows:
     instance_type: linux_x2
     environment:
       android_signing:
-      - jboth_android_keystore_ref
+        - jboth_android_keystore_ref
       groups:
-      - mm_common
-      - jboth_client
+        - mm_common
+        - jboth_client
       vars:
         BUILD_FOR_RELEASE: 'true'
         ANDROID_BUILD_TASK: assemble
         REPLACE_ASSETS: 'true'
     cache:
       cache_paths:
-      - $HOME/.gradle/caches
-      - node_modules
+        - $HOME/.gradle/caches
+        - node_modules
     scripts:
-    - name: Node 环境与依赖
-      script: "set -e\nexport NVM_DIR=\"$HOME/.nvm\"\nif [ -f \".nvmrc\" ] && [ -s\
-        \ \"$NVM_DIR/nvm.sh\" ]; then\n  . \"$NVM_DIR/nvm.sh\"\n  nvm install --silent\n\
-        \  nvm use --silent\nelse\n  echo \"⚠️ 未检测到 nvm，使用系统 Node\"\n  which node\
-        \ || true\n  node -v || true\n  npm -v || true\nfi\nnpm ci\n"
-    - name: 注入签名（Gradle）
-      script: 'mkdir -p $HOME/.gradle
-
-        cat >> $HOME/.gradle/gradle.properties <<EOF
-
-        MATTERMOST_RELEASE_STORE_FILE=$CM_KEYSTORE_PATH
-
-        MATTERMOST_RELEASE_KEY_ALIAS=$CM_KEY_ALIAS
-
-        MATTERMOST_RELEASE_PASSWORD=$CM_KEY_PASSWORD
-
-        EOF
-
-        '
-    - name: 写入/兜底默认服务器配置（如仓库中已存在将不会覆盖）
-      script: "set -e\nmkdir -p assets/override\nCFG=assets/override/config.json\n\
-        if [ ! -f \"$CFG\" ]; then\n  cat > \"$CFG\" <<'JSON'\n{\n  \"DefaultServerUrl\"\
-        : \"https://hello.jboth.com\",\n  \"AutoSelectServerUrl\": true\n}\nJSON\n\
-        \  echo \"Created $CFG with default server URL.\"\nelse\n  echo \"Found existing\
-        \ $CFG, keep your repo version.\"\nfi\n"
-    - name: 白标变量确认
-      script: 'echo "APP_NAME=$APP_NAME"
-
-        echo "MAIN_APP_IDENTIFIER=$MAIN_APP_IDENTIFIER"
-
-        echo "APP_SCHEME=$APP_SCHEME"
-
-        '
-    - name: 构建（优先使用仓库自带 lane）
-      script: 'set -e
-
-        npm run build:android || echo "lane 构建失败，尝试 Gradle 兜底…"
-
-        '
-    - name: 兜底：直接 Gradle 生成 APK（如 lane 只产出 AAB）
-      script: "set -e\ncd android\n./gradlew assembleRelease \\\n  -Pandroid.injected.signing.store.file=\"\
-        $CM_KEYSTORE_PATH\" \\\n  -Pandroid.injected.signing.store.password=\"$CM_KEY_PASSWORD\"\
-        \ \\\n  -Pandroid.injected.signing.key.alias=\"$CM_KEY_ALIAS\" \\\n  -Pandroid.injected.signing.key.password=\"\
-        $CM_KEY_PASSWORD\" || true\ncd -\n"
-    - name: 收集制品（APK/AAB）
-      script: 'mkdir -p $CM_ARTIFACTS
-
-        find . -type f -name "*release*.apk" -maxdepth 6 -print -exec cp -f {} $CM_ARTIFACTS
-        \; || true
-
-        find . -type f -name "*.aab" -maxdepth 6 -print -exec cp -f {} $CM_ARTIFACTS
-        \; || true
-
-        '
+      - name: Node 环境与依赖
+        script: |
+          set -e
+          export NVM_DIR="$HOME/.nvm"
+          if [ -f ".nvmrc" ] && [ -s "$NVM_DIR/nvm.sh" ]; then
+            . "$NVM_DIR/nvm.sh"
+            nvm install --silent
+            nvm use --silent
+          else
+            echo "⚠️ 未检测到 nvm，使用系统 Node"
+            which node || true
+            node -v || true
+            npm -v || true
+          fi
+          npm ci
+      - name: 注入签名（Gradle）
+        script: |
+          mkdir -p $HOME/.gradle
+          cat >> $HOME/.gradle/gradle.properties <<EOF
+          MATTERMOST_RELEASE_STORE_FILE=$CM_KEYSTORE_PATH
+          MATTERMOST_RELEASE_KEY_ALIAS=$CM_KEY_ALIAS
+          MATTERMOST_RELEASE_PASSWORD=$CM_KEY_PASSWORD
+          EOF
+      - name: 写入/兜底默认服务器配置（如仓库中已存在将不会覆盖）
+        script: |
+          set -e
+          mkdir -p assets/override
+          CFG=assets/override/config.json
+          if [ ! -f "$CFG" ]; then
+            cat > "$CFG" <<'JSON'
+          {
+            "DefaultServerUrl": "https://hello.jboth.com",
+            "AutoSelectServerUrl": true
+          }
+          JSON
+            echo "Created $CFG with default server URL."
+          else
+            echo "Found existing $CFG, keep your repo version."
+          fi
+      - name: 白标变量确认
+        script: |
+          echo "APP_NAME=$APP_NAME"
+          echo "MAIN_APP_IDENTIFIER=$MAIN_APP_IDENTIFIER"
+          echo "APP_SCHEME=$APP_SCHEME"
+      - name: 构建（优先使用仓库自带 lane）
+        script: |
+          set -e
+          npm run build:android || echo "lane 构建失败，尝试 Gradle 兜底…"
+      - name: 兜底：直接 Gradle 生成 APK（如 lane 只产出 AAB）
+        script: |
+          set -e
+          cd android
+          ./gradlew assembleRelease             -Pandroid.injected.signing.store.file="$CM_KEYSTORE_PATH"             -Pandroid.injected.signing.store.password="$CM_KEY_PASSWORD"             -Pandroid.injected.signing.key.alias="$CM_KEY_ALIAS"             -Pandroid.injected.signing.key.password="$CM_KEY_PASSWORD" || true
+          cd -
+      - name: 收集制品（APK/AAB）
+        script: |
+          mkdir -p $CM_ARTIFACTS
+          find . -type f -name "*release*.apk" -maxdepth 6 -print -exec cp -f {} $CM_ARTIFACTS \; || true
+          find . -type f -name "*.aab" -maxdepth 6 -print -exec cp -f {} $CM_ARTIFACTS \; || true
   mm-whitelabel-ios:
     name: Mattermost WhiteLabel iOS (TestFlight/App Store)
     max_build_duration: 120
     instance_type: mac_mini_m2
     environment:
       groups:
-      - mm_common
-      - jboth_client
-      - ios_match
+        - mm_common
+        - jboth_client
+        - ios_match
       vars:
         BUILD_FOR_RELEASE: 'true'
         REPLACE_ASSETS: 'true'
+        GYM_EXPORT_METHOD: app-store
     cache:
       cache_paths:
-      - $HOME/Library/Caches/CocoaPods
-      - ios/Pods
-      - node_modules
+        - $HOME/Library/Caches/CocoaPods
+        - ios/Pods
+        - node_modules
     scripts:
-    - name: 环境与依赖（Node + watchman + CocoaPods 1.16.1）
-      script: "set -e\necho \"▶ Using system Node\"\nwhich node || true\nnode -v ||\
-        \ true\nnpm -v || true\n\necho \"▶ Install watchman（Solidarity 需要）\"\nif command\
-        \ -v brew >/dev/null 2>&1; then\n  eval \"$(/opt/homebrew/bin/brew shellenv)\"\
-        \ || true\n  brew list watchman >/dev/null 2>&1 || brew install watchman\n\
-        \  watchman --version || true\nelse\n  echo \"❌ Homebrew 未找到，无法安装 watchman\"\
-        ; exit 1\nfi\n\necho \"▶ Pin CocoaPods 1.16.1（用户 gem 目录）\"\nexport GEM_HOME=\"\
-        $HOME/.gem\"\nexport GEM_PATH=\"$GEM_HOME\"\nexport PATH=\"$GEM_HOME/bin:$PATH\"\
-        \ngem list -i cocoapods -v 1.16.1 || gem install cocoapods -v 1.16.1 --no-document\n\
-        unset RUBYOPT BUNDLE_GEMFILE BUNDLE_BIN_PATH BUNDLE_PATH BUNDLER_ORIG_PATH\
-        \ BUNDLER_ORIG_MANPATH || true\necho \"pod path: $(command -v pod || echo\
-        \ 'not found')\"\nenv -i PATH=\"$PATH\" GEM_HOME=\"$GEM_HOME\" GEM_PATH=\"\
-        $GEM_PATH\" HOME=\"$HOME\" LANG=\"${LANG:-en_US.UTF-8}\" pod _1.16.1_ --version\n\
-        \necho \"▶ npm ci\"\nnpm ci\n"
-    - name: Ruby/Fastlane + CocoaPods（用固定的 1.16.1 执行）
-      script: "set -e\n\n# ① 强制 rbenv 使用已安装的 Ruby（覆盖 .ruby-version 的 3.2.0）\nif command\
-        \ -v rbenv >/dev/null 2>&1; then\n  # 取一个已安装版本（优先 3.x），没有就用 system\n  RB_INST=\"\
-        $(rbenv versions --bare | grep -E '^[0-9]+\\.[0-9]+' | tail -1 || true)\"\n\
-        \  export RBENV_VERSION=\"${RB_INST:-system}\"\n  echo \"Using rbenv Ruby:\
-        \ ${RBENV_VERSION}\"\nfi\nruby -v || true\n\n# ② 临时“屏蔽”仓库根的 .ruby-version，防止子进程再次读取\
-        \ 3.2.0\nif [ -f .ruby-version ]; then\n  mv .ruby-version .ruby-version.bak\n\
-        \  trap 'mv .ruby-version.bak .ruby-version 2>/dev/null || true' EXIT\nfi\n\
-        \n# ③ 使用我们已安装到 $HOME/.gem 的 CocoaPods 1.16.1（不走 bundler）\ncd ios\nRBENV_VERSION=\"\
-        ${RBENV_VERSION}\" \\\nGEM_HOME=\"$HOME/.gem\" GEM_PATH=\"$HOME/.gem\" HOME=\"\
-        $HOME\" LANG=\"${LANG:-en_US.UTF-8}\" \\\npod _1.16.1_ install --repo-update\n\
-        cd ..\n"
-
-    - name: 🔧 Patch Pods project (TurboLogIOSNative module.modulemap hotfix)
-      script: |
-        set -euo pipefail
-        cd ios
-        cat > patch_turblog.rb <<'RUBY'
-        require 'xcodeproj'
-        pods_proj_path = 'Pods/Pods.xcodeproj'
-        proj = Xcodeproj::Project.open(pods_proj_path)
-        changed = false
-        targets = proj.targets.select { |t| t.name == 'TurboLogIOSNative' }
-        if targets.empty?
-          puts "ℹ️ Target TurboLogIOSNative not found, skipping"
-        else
-          targets.each do |t|
-            phases = []
-            phases << t.source_build_phase if t.respond_to?(:source_build_phase)
-            phases << t.sources_build_phase if t.respond_to?(:sources_build_phase)
-            phases.compact.each do |phase|
-              phase.files.each do |bf|
-                fr = bf.file_ref
-                next unless fr && fr.path && fr.path.end_with?('.modulemap')
-                phase.remove_file_reference(fr)
-                changed = true
-                puts "🧹 Removed #{fr.path} from Compile Sources of #{t.name}"
+      - name: 环境与依赖（Node + watchman + CocoaPods 1.16.1）
+        script: |
+          set -e
+          echo "▶ Using system Node"
+          which node || true
+          node -v || true
+          npm -v || true
+          echo "▶ Install watchman（Solidarity 需要）"
+          if command -v brew >/dev/null 2>&1; then
+            eval "$(/opt/homebrew/bin/brew shellenv)" || true
+            brew list watchman >/dev/null 2>&1 || brew install watchman
+            watchman --version || true
+          else
+            echo "❌ Homebrew 未找到，无法安装 watchman"; exit 1
+          fi
+          echo "▶ Pin CocoaPods 1.16.1（用户 gem 目录）"
+          export GEM_HOME="$HOME/.gem"
+          export GEM_PATH="$GEM_HOME"
+          export PATH="$GEM_HOME/bin:$PATH"
+          gem list -i cocoapods -v 1.16.1 || gem install cocoapods -v 1.16.1 --no-document
+          unset RUBYOPT BUNDLE_GEMFILE BUNDLE_BIN_PATH BUNDLE_PATH BUNDLER_ORIG_PATH || true
+          echo "pod path: $(command -v pod || echo 'not found')"
+          env -i PATH="$PATH" GEM_HOME="$GEM_HOME" GEM_PATH="$GEM_PATH" HOME="$HOME" LANG="${LANG:-en_US.UTF-8}" pod _1.16.1_ --version
+          echo "▶ npm ci"
+          npm ci
+      - name: Ruby/Fastlane + CocoaPods（用固定的 1.16.1 执行）
+        script: |
+          set -e
+          if command -v rbenv >/dev/null 2>&1; then
+            RB_INST="$(rbenv versions --bare | grep -E '^[0-9]+\.[0-9]+' | tail -1 || true)"
+            export RBENV_VERSION="${RB_INST:-system}"
+            echo "Using rbenv Ruby: ${RBENV_VERSION}"
+          fi
+          ruby -v || true
+          if [ -f .ruby-version ]; then
+            mv .ruby-version .ruby-version.bak
+            trap 'mv .ruby-version.bak .ruby-version 2>/dev/null || true' EXIT
+          fi
+          cd ios
+          RBENV_VERSION="${RBENV_VERSION}" GEM_HOME="$HOME/.gem" GEM_PATH="$HOME/.gem" HOME="$HOME" LANG="${LANG:-en_US.UTF-8}"           pod _1.16.1_ install --repo-update
+          cd -
+      - name: 🔧 Patch Pods project (TurboLogIOSNative module.modulemap hotfix)
+        script: |
+          set -euo pipefail
+          cd ios
+          ruby - <<'RUBY'
+            require 'xcodeproj'
+            proj = Xcodeproj::Project.open('Pods/Pods.xcodeproj')
+            targets = proj.targets.select { |t| t.name == 'TurboLogIOSNative' }
+            if targets.empty?
+              puts "ℹ️ Target TurboLogIOSNative not found, skipping"
+            else
+              targets.each do |t|
+                [t.respond_to?(:source_build_phase) ? t.source_build_phase : nil,
+                 t.respond_to?(:sources_build_phase) ? t.sources_build_phase : nil].compact.each do |phase|
+                  phase.files_references.select { |fr| (fr.path || '').end_with?('.modulemap') }.each { |fr| phase.remove_file_reference(fr) }
+                end
+                t.build_configurations.each do |cfg|
+                  cfg.build_settings['EXCLUDED_SOURCE_FILE_NAMES'] = '*/module.modulemap *.modulemap'
+                  cfg.build_settings['MODULEMAP_FILE'] = '$(SRCROOT)/TurboLogIOSNative/Sources/TurboLogSwift/module.modulemap'
+                  cfg.build_settings['DEFINES_MODULE'] = 'YES'
+                end
               end
+              proj.save
+              puts "✅ Patched TurboLogIOSNative in Pods.xcodeproj"
             end
-            t.build_configurations.each do |cfg|
-              cfg.build_settings['EXCLUDED_SOURCE_FILE_NAMES'] = '*/module.modulemap *.modulemap'
-              cfg.build_settings['DEFINES_MODULE'] = 'YES'
-              cfg.build_settings['MODULEMAP_FILE'] = '$(SRCROOT)/TurboLogIOSNative/Sources/TurboLogSwift/module.modulemap'
-            end
-          end
-        end
-        if changed
-          proj.save
-          puts "✅ Patched TurboLogIOSNative in Pods.xcodeproj"
-        else
-          puts "ℹ️ No changes needed"
-        end
-        RUBY
-
-        # CocoaPods 安装的 xcodeproj gem 就能跑
-        ruby patch_turblog.rb
-
-        # 兜底：如果 Ruby 失败，直接把 .modulemap 从 pbxproj 的 Sources 条目里扫掉
-        if [ $? -ne 0 ]; then
-          echo "⚠️ Ruby patch failed, applying sed fallback..."
-          PBX="Pods/Pods.xcodeproj/project.pbxproj"
-          cp "$PBX" "${PBX}.bak"
-          # 移除引用到 module.modulemap 的 PBXBuildFile 节点（尽量保守）
-          awk 'BEGIN{skip=0}
-              /module\.modulemap/ {skip=1}
-              skip && /\/\* End PBXBuildFile section \*\// {skip=0}
-              !skip {print}' "$PBX" > "${PBX}.tmp" && mv "${PBX}.tmp" "$PBX"
-        fi
-        cd ..
-
-
-    - name: 配置证书库（HTTPS + Token）并自检
-      script: set -e; if [ -z "${GITHUB_PAT:-}" ]; then echo '❌ 缺少 GITHUB_PAT'; exit
-        1; fi; export MATCH_GIT_URL="https://${GITHUB_PAT}@github.com/goodwillworld/ios-certs.git";
-        echo 'MATCH_GIT_URL set (token masked)'; git -c credential.helper= ls-remote
-        "$MATCH_GIT_URL" >/dev/null; echo '✅ match 证书库可访问（HTTPS+Token）'; export SIGH_GIT_URL="$MATCH_GIT_URL"
-    - name: 自检关键变量（不会泄露）
-      script: 'set -e
-
-        check_var() { if [ -z "${!1}" ]; then echo "❌ MISSING $1"; exit 1; else echo
-        "✅ $1 OK"; fi; }
-
-        check_var FASTLANE_TEAM_ID
-
-        check_var MATCH_USERNAME
-
-        check_var MATCH_PASSWORD
-
-        check_var MATCH_GIT_URL
-
-        check_var MATCH_APP_IDENTIFIER
-
-        check_var MATCH_TYPE
-
-        check_var ASC_KEY_ID
-
-        check_var ASC_ISSUER_ID
-
-        if [ -z "$ASC_PRIVATE_KEY" ]; then echo "❌ MISSING ASC_PRIVATE_KEY"; exit
-        1; else echo "✅ ASC_PRIVATE_KEY OK (hidden)"; fi
-
-        '
-    - name: 若缺失则创建 App ID（使用 ASC API Key）
-      script: "set -e\n: \"${ASC_KEY_ID:?缺少 ASC_KEY_ID}\"\n: \"${ASC_ISSUER_ID:?缺少\
-        \ ASC_ISSUER_ID}\"\n: \"${ASC_PRIVATE_KEY:?缺少 ASC_PRIVATE_KEY}\"\n: \"${FASTLANE_TEAM_ID:?缺少\
-        \ FASTLANE_TEAM_ID}\"\n\n# 1) 准备 fastlane（有 Gemfile 用 bundler，否则用 gem）\nif\
-        \ [ -f Gemfile ] && grep -qi 'fastlane' Gemfile; then\n  gem install bundler\
-        \ --no-document\n  bundle install\n  FL=\"bundle exec fastlane\"\nelse\n \
-        \ gem install fastlane -v 2.228.0 --no-document || gem install fastlane --no-document\n\
-        \  FL=\"fastlane\"\nfi\n$FL --version\n\n# 2) 生成 ASC API Key JSON（安全转义）\n\
-        python3 - <<'PY'\nimport os, json\ndata={\n  \"key_id\": os.environ[\"ASC_KEY_ID\"\
-        ].strip(),\n  \"issuer_id\": os.environ[\"ASC_ISSUER_ID\"].strip(),\n  \"\
-        key\": os.environ[\"ASC_PRIVATE_KEY\"].replace(\"\\r\\n\",\"\\n\").replace(\"\
-        \\r\",\"\\n\"),\n  \"in_house\": False\n}\nopen(\"asc_api_key.json\",\"w\"\
-        ).write(json.dumps(data))\nPY\npython3 -m json.tool asc_api_key.json >/dev/null\
-        \ && echo \"✅ asc_api_key.json OK\"\n\n# 3) 需要的 3 个 bundle id（主 App + Share\
-        \ Extension + Notification Service）\nAPP_NAME_CN=\"${APP_NAME:-加步协同}\"  #\
-        \ 作为主 App 的名字；扩展用派生名\nMAIN=\"com.jboth.mine\"\nSHARE=\"com.jboth.mine.MattermostShare\"\
-        \nNTFY=\"com.jboth.mine.NotificationService\"\n\n# 4) 用 produce 按需创建（存在则跳过）\n\
-        create_if_missing() {\n  local bid=\"$1\"; local name=\"$2\"\n  echo \"▶ 确保存在\
-        \ App ID: $bid ($name)\"\n  $FL run produce \\\n    app_identifier:\"$bid\"\
-        \ \\\n    app_name:\"$name\" \\\n    skip_itc:\"true\" \\\n    team_id:\"\
-        $FASTLANE_TEAM_ID\" \\\n    api_key_path:\"asc_api_key.json\" \\\n    run_if:\"\
-        true\" \\\n    verbose:true || true\n}\n\ncreate_if_missing \"$MAIN\"  \"\
-        $APP_NAME_CN\"\ncreate_if_missing \"$SHARE\" \"${APP_NAME_CN} Share Extension\"\
-        \ncreate_if_missing \"$NTFY\"  \"${APP_NAME_CN} Notification Service\"\n\n\
-        echo \"✅ App IDs ensured.\"\n"
-    - name: 首次初始化签名（仅当证书库为空时执行）
-      script: "set -e\n: \"${MATCH_GIT_URL:?缺少 MATCH_GIT_URL}\"\n: \"${FASTLANE_TEAM_ID:?缺少\
-        \ FASTLANE_TEAM_ID}\"\n: \"${MATCH_APP_IDENTIFIER:?缺少 MATCH_APP_IDENTIFIER（逗号分隔多个ID）}\"\
-        \n: \"${ASC_KEY_ID:?缺少 ASC_KEY_ID}\"\n: \"${ASC_ISSUER_ID:?缺少 ASC_ISSUER_ID}\"\
-        \n: \"${ASC_PRIVATE_KEY:?缺少 ASC_PRIVATE_KEY}\"\n\n# 仓库是否为空（无分支）\nif [ \"$(git\
-        \ -c credential.helper= ls-remote --heads \"$MATCH_GIT_URL\" | wc -l | tr\
-        \ -d ' ')\" -gt 0 ]; then\n  echo \"ℹ️ 证书库非空，跳过初始化\"\n  exit 0\nfi\necho \"\
-        \U0001F195 空仓库：执行首轮初始化（创建证书/描述文件并 push）\"\n\n# 安装 fastlane（按需）\nif [ -f Gemfile\
-        \ ] && grep -qi 'fastlane' Gemfile; then\n  gem install bundler --no-document\n\
-        \  bundle install\n  FL=\"bundle exec fastlane\"\nelse\n  gem install fastlane\
-        \ -v 2.228.0 --no-document || gem install fastlane --no-document\n  FL=\"\
-        fastlane\"\nfi\n$FL --version\n\n# 生成 ASC API Key JSON（安全转义）\npython3 - <<'PY'\n\
-        import os, json\ndata={\n  \"key_id\": os.environ[\"ASC_KEY_ID\"].strip(),\n\
-        \  \"issuer_id\": os.environ[\"ASC_ISSUER_ID\"].strip(),\n  \"key\": os.environ[\"\
-        ASC_PRIVATE_KEY\"].replace(\"\\r\\n\",\"\\n\").replace(\"\\r\",\"\\n\"),\n\
-        \  \"in_house\": False\n}\nopen(\"asc_api_key.json\",\"w\").write(json.dumps(data))\n\
-        PY\npython3 -m json.tool asc_api_key.json >/dev/null && echo \"✅ asc_api_key.json\
-        \ OK\"\n\n# 临时 keychain，避免交互\nKEYCHAIN_PWD=\"${KEYCHAIN_PWD:-$(uuidgen)}\"\
-        \n$FL run create_keychain name:\"cm_tmp\" password:\"$KEYCHAIN_PWD\" default_keychain:true\
-        \ unlock:true timeout:3600\n\n# Git 用户信息（用于首次提交）\ngit config --global user.email\
-        \ \"codemagic@local\"\ngit config --global user.name  \"Codemagic CI\"\n\n\
-        # 首轮创建（readonly:false）\n$FL run match \\\n  type:\"appstore\" \\\n  readonly:\"\
-        false\" \\\n  git_url:\"$MATCH_GIT_URL\" \\\n  app_identifier:\"$MATCH_APP_IDENTIFIER\"\
-        \ \\\n  team_id:\"$FASTLANE_TEAM_ID\" \\\n  api_key_path:\"asc_api_key.json\"\
-        \ \\\n  keychain_name:\"cm_tmp\" \\\n  keychain_password:\"$KEYCHAIN_PWD\"\
-        \ \\\n  verbose:true\n\necho \"✅ 初始化完成：后续 match 可只读\"\n"
-    
-    - name: 统一导出方式为 app-store（避免签名不匹配）
-      script: |
-        set -e
-        export GYM_EXPORT_METHOD=app-store
-        export FL_GYM_EXPORT_METHOD=app-store
-        export SIGH_PROFILE_TYPE=app-store
-        echo "GYM_EXPORT_METHOD=$GYM_EXPORT_METHOD"
-        echo "FL_GYM_EXPORT_METHOD=$FL_GYM_EXPORT_METHOD"
-        echo "SIGH_PROFILE_TYPE=$SIGH_PROFILE_TYPE"
-
-
-    - name: 放宽 xcodebuild settings 超时
-      script: |
-        export FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT=120
-        echo "FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT=$FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT"
-
-    - name: 重新生成 App Store 描述文件并安装（包含 App Groups）
-      script: |
-        set -e
-        if [ -f Gemfile ] && grep -qi fastlane Gemfile; then
-          gem install bundler --no-document
-          bundle install
-          FL="bundle exec fastlane"
-        else
-          gem install fastlane -v 2.228.0 --no-document || gem install fastlane --no-document
-          FL="fastlane"
-        fi
-        $FL run match \
-          type:"appstore" \
-          readonly:"false" \
-          force:"true" \
-          app_identifier:"com.jboth.mine,com.jboth.mine.MattermostShare,com.jboth.mine.NotificationService" \
-          team_id:"$FASTLANE_TEAM_ID" \
-          username:"$MATCH_USERNAME" \
-          git_url:"$MATCH_GIT_URL" \
-          verbose:true
-
-
-    - name: 构建 iOS（使用仓库 lane）
-      script: 'set -e
-
-        npm run build:ios
-
-        '
-    - name: 打印 gym 详细日志（若存在）
-      script: |
-        LOG="$HOME/Library/Logs/gym/Mattermost-Mattermost.log"
-        if [ -f "$LOG" ]; then
-          echo "===== BEGIN gym log ====="
-          tail -n +1 "$LOG" | sed -e 's/\r$//'
-          echo "===== END gym log ====="
-        else
-          echo "No gym log found at $LOG"
-        fi
-
-
-    - name: 收集制品
-      script: 'mkdir -p $CM_ARTIFACTS
-
-        find . -type f -name "*.ipa" -maxdepth 6 -print -exec cp -f {} $CM_ARTIFACTS
-        \; || true
-
-        '
+          RUBY
+          cd ..
+      - name: 配置证书库（HTTPS + Token）并自检
+        script: |
+          set -e
+          if [ -z "${GITHUB_PAT:-}" ]; then echo '❌ 缺少 GITHUB_PAT'; exit 1; fi
+          export MATCH_GIT_URL="https://${GITHUB_PAT}@github.com/goodwillworld/ios-certs.git"
+          echo 'MATCH_GIT_URL set (token masked)'
+          git -c credential.helper= ls-remote "$MATCH_GIT_URL" >/dev/null
+          echo '✅ match 证书库可访问（HTTPS+Token）'
+          export SIGH_GIT_URL="$MATCH_GIT_URL"
+      - name: 自检关键变量（不会泄露）
+        script: |
+          set -e
+          check_var() { if [ -z "${!1}" ]; then echo "❌ MISSING $1"; exit 1; else echo "✅ $1 OK"; fi; }
+          check_var FASTLANE_TEAM_ID
+          check_var MATCH_USERNAME
+          check_var MATCH_PASSWORD
+          check_var MATCH_GIT_URL
+          check_var ASC_KEY_ID
+          check_var ASC_ISSUER_ID
+          if [ -z "$ASC_PRIVATE_KEY" ]; then echo "❌ MISSING ASC_PRIVATE_KEY"; exit 1; else echo "✅ ASC_PRIVATE_KEY OK (hidden)"; fi
+      - name: 生成 ASC API Key（供 match/gym 使用）
+        script: |
+          set -e
+          python3 - <<'PY'
+          import os, json
+          data={
+            "key_id": os.environ["ASC_KEY_ID"].strip(),
+            "issuer_id": os.environ["ASC_ISSUER_ID"].strip(),
+            "key": os.environ["ASC_PRIVATE_KEY"].replace("
+","
+").replace("
+","
+"),
+            "in_house": False
+          }
+          open("asc_api_key.json","w").write(json.dumps(data))
+          PY
+          python3 -m json.tool asc_api_key.json >/dev/null && echo "✅ asc_api_key.json OK"
+          export FASTLANE_API_KEY_PATH="$PWD/asc_api_key.json"
+      - name: 强制重新生成 App Store 描述文件（匹配 entitlements/App Group 后再执行）
+        script: |
+          set -e
+          if ! gem list -i fastlane -v 2.228.0 >/dev/null; then gem install fastlane -v 2.228.0 --no-document; fi
+          fastlane --version
+          export MATCH_APP_IDENTIFIER="com.jboth.mine,com.jboth.mine.MattermostShare,com.jboth.mine.NotificationService"
+          export MATCH_TYPE="appstore"
+          fastlane run match type:"$MATCH_TYPE" readonly:false force:true app_identifier:"$MATCH_APP_IDENTIFIER" team_id:"$FASTLANE_TEAM_ID" username:"$MATCH_USERNAME" git_url:"$MATCH_GIT_URL" verbose:true
+      - name: 构建 iOS（使用仓库 lane）
+        script: |
+          set -e
+          npm run build:ios
+      - name: 收集制品
+        script: |
+          mkdir -p $CM_ARTIFACTS
+          find . -type f -name "*.ipa" -maxdepth 6 -print -exec cp -f {} $CM_ARTIFACTS \; || true
     publishing:
       app_store_connect:
-        api_key: '-----BEGIN PRIVATE KEY-----
-
+        api_key: |
+          -----BEGIN PRIVATE KEY-----
           MIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQgTHFCUEmtmzuEaG/T
-
           zD5C5EBtEBsuWf54ZxCbWmpD/lugCgYIKoZIzj0DAQehRANCAAS6nYsA0zoFzGbY
-
           t9rYpOKdcq0hG8zmImfhjOct0m609Z/J4fOcoxeLd3LJr4DAo6Kk+PBeCFBvrxIl
-
           j5J7JvfX
-
           -----END PRIVATE KEY-----
-
-          '
         key_id: UZ33M397NY
         issuer_id: 26e601c9-c2f0-497a-a9e1-39a426cecf9a
         submit_to_testflight: true
