@@ -11,14 +11,16 @@ workflows:
         MATCH_PROVISIONING_PROFILE_UUID: "{{ APP_STORE_PROFILE }}"
     scripts:
       - name: Get packages
-        script: yarn install  # 或 npm install，如果用 npm
+        script: |
+          cd /Users/builder/clone  # 明确指定项目根目录
+          yarn install  # 或 npm install，如果用 npm
       - name: Install CocoaPods
         script: |
-          cd ios
+          cd /Users/builder/clone/ios
           pod install
       - name: Build iOS
         script: |
-          cd ios
+          cd /Users/builder/clone/ios
           xcode-project use-profiles
           xcode-project build-ipa --scheme "$APP_NAME"
     artifacts:
