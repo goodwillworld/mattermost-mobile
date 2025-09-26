@@ -6,9 +6,9 @@ workflows:
     environment:
       vars:
         BUNDLE_ID: "com.jboth.mine"  # 匹配您的 Bundle ID
-        APP_NAME: "加步协同"
-        MATCH_CERTIFICATE_PATH: "{{ DISTRIBUTION_CERT }}"  # Codemagic 会自动注入
-        MATCH_PROVISIONING_PROFILE_UUID: "{{ APP_STORE_PROFILE }}"
+        APP_NAME: "加步协同"  # 确认与 Xcode 方案名称一致
+        MATCH_CERTIFICATE_PATH: "{{ jboth_ios_cert }}"  # 替换为 Codemagic UI 中的证书 Reference name
+        MATCH_PROVISIONING_PROFILE_UUID: "{{ jboth_mine }}"  # 替换为 Codemagic UI 中的配置文件 Reference name
         CI: "true"  # 触发跳过 Solidarity
     scripts:
       - name: Clean up parent directory
@@ -22,7 +22,7 @@ workflows:
       - name: Install CocoaPods
         script: |
           cd /Users/builder/clone/ios
-          # 可选：如果跳过 Solidarity 无效，取消注释以下行以降级 CocoaPods
+          # 可选：如果 Pod 版本冲突，取消注释以降级
           # gem uninstall cocoapods -a -x
           # gem install cocoapods -v 1.16.1
           pod install
@@ -30,7 +30,7 @@ workflows:
         script: |
           cd /Users/builder/clone/ios
           xcode-project use-profiles
-          xcode-project build-ipa --scheme "$APP_NAME"
+          xcode-project build-ipa --workspace Mattermost.xcworkspace --scheme "$APP_NAME"
     artifacts:
       - ios/ipa/*.ipa
     publishing:
