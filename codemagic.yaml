@@ -17,13 +17,14 @@ workflows:
           rm -f /Users/builder/package.json /Users/builder/yarn.lock
       - name: Get packages
         script: |
-          cd /Users/builder/clone  # 明确指定项目根目录
+          cd /Users/builder/clone
           yarn install --frozen-lockfile  # 使用锁文件，避免更新
       - name: Install CocoaPods
         script: |
           cd /Users/builder/clone/ios
-          # 可选：如果 Pod 版本仍冲突，降级到 1.16.1（测试后启用）
-          # gem uninstall cocoapods -v 1.16.2 && gem install cocoapods -v 1.16.1
+          # 可选：如果跳过 Solidarity 无效，取消注释以下行以降级 CocoaPods
+          # gem uninstall cocoapods -a -x
+          # gem install cocoapods -v 1.16.1
           pod install
       - name: Build iOS
         script: |
