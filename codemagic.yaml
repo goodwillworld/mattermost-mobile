@@ -28,5 +28,5 @@ workflows:
         recipients:
           - bill.fan4java@gmail.com  # 测试通知
       app_store_connect:
-        api_key: '$jboth_app_store_connect'  # 引用 Codemagic UI 中配置的 API Key
+        api_key: "$jboth_app_store_connect"  # 引用 Codemagic UI 中配置的 API 密钥
         submit_to_testflight: true  # 先测试，再设为 app_store
