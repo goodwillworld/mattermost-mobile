@@ -12,6 +12,10 @@ workflows:
     scripts:
       - name: Get packages
         script: yarn install  # 或 npm install，如果用 npm
+      - name: Install CocoaPods
+        script: |
+          cd ios
+          pod install
       - name: Build iOS
         script: |
           cd ios
@@ -24,5 +28,5 @@ workflows:
         recipients:
           - bill.fan4java@gmail.com  # 测试通知
       app_store_connect:
-        api_key: '$CM_BUILD_API_KEY'  # 稍后设置
+        api_key: '$jboth_app_store_connect'  # 引用 Codemagic UI 中配置的 API Key
         submit_to_testflight: true  # 先测试，再设为 app_store
