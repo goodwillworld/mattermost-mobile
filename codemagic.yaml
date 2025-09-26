@@ -1,13 +1,13 @@
 workflows:
   ios-publish:
     name: Build and Publish iOS
-    instance_type: mac_mini_m2  # 或 mac_pro 为更快构建
+    instance_type: mac_mini_m2
     max_build_duration: 60
     environment:
       vars:
         BUNDLE_ID: "com.jboth.mine"  # 主应用 Bundle ID
-        APP_NAME: "Mattermost"  # 确认 Scheme 为 Mattermost
-        MATCH_CERTIFICATE_PATH: "{{ DistributionCert }}"  # Codemagic UI 中的证书 Reference name
+        APP_NAME: "Mattermost"  # 确认 Scheme
+        MATCH_CERTIFICATE_PATH: "{{ DistributionCert }}"  # 证书 Reference name
         MATCH_PROVISIONING_PROFILE_UUID: "{{ AppStoreProfile }}"  # 主应用配置文件
         MATCH_SHARE_PROFILE: "{{ ShareProfile }}"  # MattermostShare 配置文件
         MATCH_NOTIFICATION_PROFILE: "{{ NotificationProfile }}"  # NotificationService 配置文件
@@ -15,7 +15,6 @@ workflows:
     scripts:
       - name: Clean up parent directory
         script: |
-          # 删除 /Users/builder 中无关的 Yarn 文件
           rm -f /Users/builder/package.json /Users/builder/yarn.lock
       - name: Get packages
         script: |
@@ -32,13 +31,14 @@ workflows:
         script: |
           cd /Users/builder/clone/ios
           xcode-project use-profiles
-          xcode-project build-ipa --workspace Mattermost.xcworkspace --scheme "$APP_NAME"
+          xcode-project build-ipa --workspace Mattermost.xcworkspace --scheme "$APP_NAME" \
+            --export-options-plist "{\"method\":\"app-store\",\"provisioningProfiles\":{\"com.jboth.mine\":\"$MATCH_PROVISIONING_PROFILE_UUID\",\"com.jboth.mine.MattermostShare\":\"$MATCH_SHARE_PROFILE\",\"com.jboth.mine.NotificationService\":\"$MATCH_NOTIFICATION_PROFILE\"}}"
     artifacts:
       - ios/ipa/*.ipa
     publishing:
       email:
         recipients:
-          - bill.fan4java@gmail.com  # 测试通知
+          - bill.fan4java@gmail.com
       app_store_connect:
         api_key: "$jboth_app_store_connect"
         key_id: "UZ33M397NY"
