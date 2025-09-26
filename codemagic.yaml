@@ -29,4 +29,6 @@ workflows:
           - bill.fan4java@gmail.com  # 测试通知
       app_store_connect:
         api_key: "$jboth_app_store_connect"  # 引用 Codemagic UI 中配置的 API 密钥
+        key_id: "UZ33M397NY"  # 您的 Key ID
+        issuer_id: "26e601c9-c2f0-497a-a9e1-39a426cecf9a"  # 替换为您的 Issuer ID
         submit_to_testflight: true  # 先测试，再设为 app_store
