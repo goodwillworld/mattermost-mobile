@@ -10,6 +10,10 @@ workflows:
         MATCH_CERTIFICATE_PATH: "{{ DISTRIBUTION_CERT }}"  # Codemagic 会自动注入
         MATCH_PROVISIONING_PROFILE_UUID: "{{ APP_STORE_PROFILE }}"
     scripts:
+      - name: Clean up parent directory
+        script: |
+          # 删除 /Users/builder 中无关的 Yarn 文件
+          rm -f /Users/builder/package.json /Users/builder/yarn.lock
       - name: Get packages
         script: |
           cd /Users/builder/clone  # 明确指定项目根目录
