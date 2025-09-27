@@ -27,6 +27,14 @@ workflows:
           gem install cocoapods -v 1.16.1
           pod cache clean --all
           pod install
+      - name: Debug Code Signing
+        script: |
+          echo "=== Debugging Code Signing ==="
+          echo "Available certificates in Keychain:"
+          security find-identity -v -p codesigning /Users/builder/Library/Keychains/login.keychain-db
+          echo "Available Provisioning Profiles:"
+          ls -la /Users/builder/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision 2>/dev/null || echo "No .mobileprovision files found"
+          echo "=== End Debug ==="
       - name: Build iOS
         script: |
           cd /Users/builder/clone/ios
