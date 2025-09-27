@@ -26,10 +26,43 @@ workflows:
       - name: Use Node 20 LTS
         script: |
           set -euo pipefail
-          . "$HOME/.nvm/nvm.sh"
-          nvm install 20
-          nvm use 20
+
+          # 1) 如果有 nvm，用 nvm
+          if [ -s "$HOME/.nvm/nvm.sh" ]; then
+            . "$HOME/.nvm/nvm.sh"
+            nvm install 20
+            nvm use 20
+          else
+            echo "nvm not found, using Homebrew node@20 ..."
+            # 2) 没有 nvm，就用 Homebrew 的 node@20
+            BREW="/opt/homebrew/bin/brew"
+            if ! command -v brew >/dev/null 2>&1; then
+              # 兼容 Intel 芯片路径（极少数情况）
+              BREW="/usr/local/bin/brew"
+            fi
+            if [ -x "/opt/homebrew/opt/node@20/bin/node" ] || [ -x "/usr/local/opt/node@20/bin/node" ]; then
+              echo "node@20 already installed."
+            else
+              "$BREW" update
+              "$BREW" install node@20
+            fi
+            # 把 node@20 放到 PATH 前面
+            if [ -d "/opt/homebrew/opt/node@20/bin" ]; then
+              export PATH="/opt/homebrew/opt/node@20/bin:$PATH"
+            elif [ -d "/usr/local/opt/node@20/bin" ]; then
+              export PATH="/usr/local/opt/node@20/bin:$PATH"
+            fi
+          fi
+
           node -v
+          # Yarn：优先用 corepack（Node 20 自带）
+          if command -v corepack >/dev/null 2>&1; then
+            corepack enable
+            corepack prepare yarn@stable --activate || true
+          else
+            npm i -g yarn
+          fi
+
           yarn -v || npm i -g yarn
 
       - name: Install JS deps
@@ -41,7 +74,6 @@ workflows:
       - name: Patch Podfile if Expo is NOT present
         script: |
           set -euo pipefail
-          . "$HOME/.nvm/nvm.sh" && nvm use 20 >/dev/null
           EXPO_OK=1
           node -e "require.resolve('expo/package.json')" 2>/dev/null || EXPO_OK=0
 
@@ -51,10 +83,8 @@ workflows:
           if [ "$EXPO_OK" -eq 0 ]; then
             echo "Expo not found -> patching Podfile"
             cp "$PODFILE" "$PODFILE.bak"
-            # 注释掉 require expo autolinking（兼容不同写法）
             sed -i.bak -E 's/^(require .*expo.*autolinking.*)$/# CM_PATCH: \1/' "$PODFILE" || true
             sed -i.bak -E 's/^(.*require .*require\.resolve\(.*expo\/package\.json.*\).*)$/# CM_PATCH: \1/' "$PODFILE" || true
-            # 注释掉 use_expo_modules!
             sed -i.bak -E 's/^\s*use_expo_modules!\s*$/  # CM_PATCH: use_expo_modules!/' "$PODFILE" || true
             diff -u "$PODFILE.bak" "$PODFILE" || true
           else
