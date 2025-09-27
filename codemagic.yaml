@@ -2,7 +2,7 @@ workflows:
   ios-publish:
     name: Build and Publish iOS
     instance_type: mac_mini_m2
-    max_build_duration: 60
+    max_build_duration: 62
     environment:
       vars:
         BUNDLE_ID: "com.jboth.mine"  # 主应用 Bundle ID
