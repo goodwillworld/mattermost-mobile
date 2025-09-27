@@ -5,8 +5,6 @@ workflows:
     max_build_duration: 60
     environment:
       groups:
-        - mm_common
-        - jboth_client
         - ios_match
       vars:
         APP_NAME: "Mattermost"  # Xcode Scheme
