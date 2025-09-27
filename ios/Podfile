@@ -44,7 +44,7 @@ target 'Mattermost' do
   pod 'React-jsc', :path => '../node_modules/react-native/ReactCommon/jsc', :modular_headers => true
   pod 'simdjson', path: '../node_modules/@nozbe/simdjson', :modular_headers => true
   pod 'CocoaLumberjack', :modular_headers => true
-  pod 'TurboLogIOSNative', :git => 'https://github.com/larkox/react-native-turbo-log-ios-native.git', :modular_headers => true
+  pod 'TurboLogIOSNative', :git => 'https://github.com/larkox/react-native-turbo-log-ios-native.git',:tag => '1.0.0', :modular_headers => true
 
   post_install do |installer|
     # https://github.com/facebook/react-native/blob/main/packages/react-native/scripts/react_native_pods.rb#L197-L202
@@ -53,12 +53,13 @@ target 'Mattermost' do
       config[:reactNativePath],
       :mac_catalyst_enabled => false
     )
-  
-    # installer.pods_project.targets.each do |target|
-    #   target.build_configurations.each do |config|
-    #     config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.1'
-    #   end
-    # end
+    installer.pods_project.targets.each do |target|
+      if target.name == 'TurboLogIOSNative'
+        target.build_configurations.each do |config|
+          config.build_settings['SWIFT_VERSION'] = '5.0'
+          config.build_settings['EXCLUDED_SOURCE_FILE_NAMES'] = ['module.modulemap']
+        end
+      end
   end
 end
 

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>method</key>
+    <string>app-store</string>
+    <key>provisioningProfiles</key>
+    <dict>
+        <key>com.jboth.mine</key>
+        <string>{{ AppStoreProfile }}</string>
+        <key>com.jboth.mine.MattermostShare</key>
+        <string>{{ ShareProfile }}</string>
+        <key>com.jboth.mine.NotificationService</key>
+        <string>{{ NotificationProfile }}</string>
+    </dict>
+</dict>
+</plist>
