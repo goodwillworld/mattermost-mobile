@@ -1,54 +1,126 @@
 workflows:
-  ios-publish:
-    name: Build and Publish iOS
+  ios-clean-signing:
+    name: Build iOS (App Groups + Push only)
     instance_type: mac_mini_m2
     max_build_duration: 60
     environment:
       vars:
-        BUNDLE_ID: "com.jboth.mine"  # 主应用 Bundle ID
-        APP_NAME: "Mattermost"  # 确认 Scheme
-        MATCH_CERTIFICATE_PATH: "{{ DistributionCert }}"  # 证书 Reference name
-        MATCH_PROVISIONING_PROFILE_UUID: "{{ AppStoreProfile }}"  # 主应用配置文件
-        MATCH_SHARE_PROFILE: "{{ ShareProfile }}"  # MattermostShare 配置文件
-        MATCH_NOTIFICATION_PROFILE: "{{ NotificationProfile }}"  # NotificationService 配置文件
-        CI: "true"  # 触发跳过 Solidarity
+        APP_NAME: "Mattermost"
+        MAIN_BUNDLE_ID: "com.jboth.mine"
+        SHARE_BUNDLE_ID: "com.jboth.mine.MattermostShare"
+        NOTI_BUNDLE_ID:  "com.jboth.mine.NotificationService"
+        APP_GROUP_ID: "group.com.jboth.mine"
+        CI: "true"  # 跳过 RN 的 Solidarity 检查等
     scripts:
-      - name: Clean up parent directory
+      - name: Install deps
         script: |
-          rm -f /Users/builder/package.json /Users/builder/yarn.lock
-      - name: Get packages
-        script: |
-          cd /Users/builder/clone
+          cd $CM_BUILD_DIR
           yarn install --frozen-lockfile
-      - name: Install CocoaPods
-        script: |
-          cd /Users/builder/clone/ios
-          gem uninstall cocoapods -a -x
+          cd ios
+          gem uninstall cocoapods -a -x || true
           gem install cocoapods -v 1.16.1
-          pod cache clean --all
+          pod repo update
           pod install
-      - name: Debug Code Signing
+
+      - name: Strip unwanted entitlements (remove iCloud & Communication Notifications)
         script: |
-          echo "=== Debugging Code Signing ==="
-          echo "Available certificates in Keychain:"
-          security find-identity -v -p codesigning /Users/builder/Library/Keychains/login.keychain-db
-          echo "Available Provisioning Profiles:"
-          ls -la /Users/builder/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision 2>/dev/null || echo "No .mobileprovision files found"
-          echo "=== End Debug ==="
-      - name: Build iOS
+          set -euo pipefail
+          ENT_DIR="$CM_BUILD_DIR/ios"
+          # 你项目里的实际路径可能不同，按需调整：
+          APP_ENT="$ENT_DIR/Mattermost/Mattermost.entitlements"
+          SHARE_ENT="$ENT_DIR/MattermostShareExtension/MattermostShare.entitlements"
+          NOTI_ENT="$ENT_DIR/NotificationServiceExtension/NotificationService.entitlements"
+
+          ensure_plist() {
+            local f="$1"
+            if [ ! -f "$f" ]; then
+              echo "Entitlements not found: $f"
+              exit 1
+            fi
+          }
+          ensure_plist "$APP_ENT"
+          ensure_plist "$SHARE_ENT"
+          ensure_plist "$NOTI_ENT"
+
+          # 删除 iCloud/Communication Notifications 相关键（存在才删，不报错）
+          strip_keys() {
+            local f="$1"
+            /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.icloud-container-development-container-identifiers" "$f" || true
+            /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.icloud-container-identifiers" "$f" || true
+            /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.icloud-services" "$f" || true
+            /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.ubiquity-container-identifiers" "$f" || true
+            /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.ubiquity-kvstore-identifier" "$f" || true
+            /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.usernotifications.communication" "$f" || true
+          }
+
+          strip_keys "$APP_ENT"
+          strip_keys "$SHARE_ENT"
+          strip_keys "$NOTI_ENT"
+
+          # 确保 App Groups 正确、且主 App 含 Push（aps-environment）
+          /usr/libexec/PlistBuddy -c "Delete :com.apple.security.application-groups" "$APP_ENT" || true
+          /usr/libexec/PlistBuddy -c "Add :com.apple.security.application-groups array" "$APP_ENT"
+          /usr/libexec/PlistBuddy -c "Add :com.apple.security.application-groups:0 string $APP_GROUP_ID" "$APP_ENT"
+
+          /usr/libexec/PlistBuddy -c "Delete :aps-environment" "$APP_ENT" || true
+          /usr/libexec/PlistBuddy -c "Add :aps-environment string production" "$APP_ENT"
+
+          for f in "$SHARE_ENT" "$NOTI_ENT"; do
+            /usr/libexec/PlistBuddy -c "Delete :aps-environment" "$f" || true
+            /usr/libexec/PlistBuddy -c "Delete :com.apple.security.application-groups" "$f" || true
+            /usr/libexec/PlistBuddy -c "Add :com.apple.security.application-groups array" "$f"
+            /usr/libexec/PlistBuddy -c "Add :com.apple.security.application-groups:0 string $APP_GROUP_ID" "$f"
+          done
+
+          echo "=== After patch ==="
+          /usr/libexec/PlistBuddy -c "Print" "$APP_ENT" || true
+          /usr/libexec/PlistBuddy -c "Print" "$SHARE_ENT" || true
+          /usr/libexec/PlistBuddy -c "Print" "$NOTI_ENT" || true
+
+      - name: Fetch signing files (App Store) & import certs
         script: |
-          cd /Users/builder/clone/ios
+          app-store-connect fetch-signing-files "$MAIN_BUNDLE_ID" --type IOS_APP_STORE --create
+          app-store-connect fetch-signing-files "$SHARE_BUNDLE_ID" --type IOS_APP_STORE --create
+          app-store-connect fetch-signing-files "$NOTI_BUNDLE_ID"  --type IOS_APP_STORE --create
+          keychain add-certificates
+
+      - name: Show signing files
+        script: |
+          security find-identity -v -p codesigning /Users/builder/Library/Keychains/login.keychain-db || true
+          ls -la "/Users/builder/Library/MobileDevice/Provisioning Profiles"/*.mobileprovision 2>/dev/null || echo "No .mobileprovision"
+          ls -la "/Users/builder/Library/MobileDevice/Provisioning Profiles"/*.provisionprofile 2>/dev/null || echo "No .provisionprofile"
+
+      - name: Apply profiles to Xcode targets
+        script: |
+          cd $CM_BUILD_DIR/ios
           xcode-project use-profiles
-          xcode-project build-ipa --workspace Mattermost.xcworkspace --scheme "$APP_NAME" \
+
+      - name: Build IPA (App Store export)
+        script: |
+          cd $CM_BUILD_DIR/ios
+          cat > export_options.plist <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>uploadSymbols</key><true/>
+            <key>compileBitcode</key><false/>
+          </dict></plist>
+          EOF
+
+          xcode-project build-ipa \
+            --workspace Mattermost.xcworkspace \
+            --scheme "$APP_NAME" \
             --export-options-plist export_options.plist
+
     artifacts:
       - ios/ipa/*.ipa
+
     publishing:
-      email:
-        recipients:
-          - bill.fan4java@gmail.com
       app_store_connect:
-        api_key: "$jboth_app_store_connect"
-        key_id: "UZ33M397NY"
-        issuer_id: "26e601c9-c2f0-497a-a9e1-39a426cecf9a"  # 替换为您的 Issuer ID
+        # 用你的加密变量/密钥
+        api_key: "$APP_STORE_CONNECT_PRIVATE_KEY"
+        key_id: "$APP_STORE_CONNECT_KEY_ID"
+        issuer_id: "$APP_STORE_CONNECT_ISSUER_ID"
         submit_to_testflight: true
