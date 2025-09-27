@@ -7,7 +7,18 @@ def node_require(script)
     )", __dir__]).strip
 end
 
-require File.join(File.dirname(`node --print "require.resolve('expo/package.json')"`), "scripts/autolinking")
+# --- SAFE Expo autolinking (only if Expo is installed) ---
+expo_pkg = `node -e "try{console.log(require.resolve('expo/package.json'))}catch(e){}"`.strip
+if !expo_pkg.empty? && File.exist?(File.join(File.dirname(expo_pkg), "scripts/autolinking.rb"))
+  require File.join(File.dirname(expo_pkg), "scripts/autolinking")
+  $expo_modules_available = true
+else
+  Pod::UI.puts "Expo not detected; skipping Expo autolinking.".yellow
+  $expo_modules_available = false
+  # Define no-op to avoid undefined method error
+  def use_expo_modules!(*args); end
+end
+# ---------------------------------------------------------
 
 node_require('react-native/scripts/react_native_pods.rb')
 node_require('react-native-permissions/scripts/setup.rb')

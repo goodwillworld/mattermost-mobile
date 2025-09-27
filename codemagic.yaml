@@ -1,48 +1,77 @@
 workflows:
-  ios-clean-signing:
-    name: Build iOS (App Groups + Push only)
+  ios-mattermost-release:
+    name: Mattermost iOS (App Groups + Push, no Expo)
     instance_type: mac_mini_m2
     max_build_duration: 60
     environment:
       vars:
-        APP_NAME: "Mattermost"
+        APP_NAME: "Mattermost"  # Xcode Scheme
         MAIN_BUNDLE_ID: "com.jboth.mine"
         SHARE_BUNDLE_ID: "com.jboth.mine.MattermostShare"
         NOTI_BUNDLE_ID:  "com.jboth.mine.NotificationService"
         APP_GROUP_ID: "group.com.jboth.mine"
-        CI: "true"  # 跳过 RN 的 Solidarity 检查等
-    scripts:
-      - name: Install deps
-        script: |
-          cd $CM_BUILD_DIR
-          yarn install --frozen-lockfile
-          cd ios
-          gem uninstall cocoapods -a -x || true
-          gem install cocoapods -v 1.16.1
-          pod repo update
-          pod install
+        CI: "true"  # 跳过部分 RN 检查
+      # 建议把以下三项设置为加密环境变量（在 Codemagic UI 中配置）
+      # APP_STORE_CONNECT_PRIVATE_KEY: |
+      # APP_STORE_CONNECT_KEY_ID: UZ33M397NY
+      # APP_STORE_CONNECT_ISSUER_ID: 26e601c9-c2f0-497a-a9e1-39a426cecf9a
 
-      - name: Strip unwanted entitlements (remove iCloud & Communication Notifications)
+    cache:
+      cache_paths:
+        - $HOME/Library/Caches/CocoaPods
+        - $CM_BUILD_DIR/node_modules
+        - $CM_BUILD_DIR/ios/Pods
+
+    scripts:
+      - name: Use Node 20 LTS
         script: |
           set -euo pipefail
-          ENT_DIR="$CM_BUILD_DIR/ios"
-          # 你项目里的实际路径可能不同，按需调整：
-          APP_ENT="$ENT_DIR/Mattermost/Mattermost.entitlements"
-          SHARE_ENT="$ENT_DIR/MattermostShareExtension/MattermostShare.entitlements"
-          NOTI_ENT="$ENT_DIR/NotificationServiceExtension/NotificationService.entitlements"
+          . "$HOME/.nvm/nvm.sh"
+          nvm install 20
+          nvm use 20
+          node -v
+          yarn -v || npm i -g yarn
 
-          ensure_plist() {
-            local f="$1"
-            if [ ! -f "$f" ]; then
-              echo "Entitlements not found: $f"
-              exit 1
-            fi
-          }
-          ensure_plist "$APP_ENT"
-          ensure_plist "$SHARE_ENT"
-          ensure_plist "$NOTI_ENT"
+      - name: Install JS deps
+        script: |
+          set -euo pipefail
+          cd "$CM_BUILD_DIR"
+          yarn install --frozen-lockfile
 
-          # 删除 iCloud/Communication Notifications 相关键（存在才删，不报错）
+      - name: Patch Podfile if Expo is NOT present
+        script: |
+          set -euo pipefail
+          . "$HOME/.nvm/nvm.sh" && nvm use 20 >/dev/null
+          EXPO_OK=1
+          node -e "require.resolve('expo/package.json')" 2>/dev/null || EXPO_OK=0
+
+          PODFILE="$CM_BUILD_DIR/ios/Podfile"
+          [ -f "$PODFILE" ] || { echo "Podfile not found"; exit 1; }
+
+          if [ "$EXPO_OK" -eq 0 ]; then
+            echo "Expo not found -> patching Podfile"
+            cp "$PODFILE" "$PODFILE.bak"
+            # 注释掉 require expo autolinking（兼容不同写法）
+            sed -i.bak -E 's/^(require .*expo.*autolinking.*)$/# CM_PATCH: \1/' "$PODFILE" || true
+            sed -i.bak -E 's/^(.*require .*require\.resolve\(.*expo\/package\.json.*\).*)$/# CM_PATCH: \1/' "$PODFILE" || true
+            # 注释掉 use_expo_modules!
+            sed -i.bak -E 's/^\s*use_expo_modules!\s*$/  # CM_PATCH: use_expo_modules!/' "$PODFILE" || true
+            diff -u "$PODFILE.bak" "$PODFILE" || true
+          else
+            echo "Expo present -> no Podfile patch"
+          fi
+
+      - name: Strip entitlements to App Groups + Push only
+        script: |
+          set -euo pipefail
+          APP_ENT="$CM_BUILD_DIR/ios/Mattermost/Mattermost.entitlements"
+          SHARE_ENT="$CM_BUILD_DIR/ios/MattermostShare/MattermostShare.entitlements"
+          NOTI_ENT="$CM_BUILD_DIR/ios/NotificationService/NotificationService.entitlements"
+          for f in "$APP_ENT" "$SHARE_ENT" "$NOTI_ENT"; do
+            [ -f "$f" ] || { echo "Missing entitlements: $f"; exit 1; }
+          done
+          APP_GROUP_ID="${APP_GROUP_ID:?APP_GROUP_ID missing}"
+
           strip_keys() {
             local f="$1"
             /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.icloud-container-development-container-identifiers" "$f" || true
@@ -53,32 +82,40 @@ workflows:
             /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.usernotifications.communication" "$f" || true
           }
 
+          # 主 App：App Groups + aps-environment=production
           strip_keys "$APP_ENT"
-          strip_keys "$SHARE_ENT"
-          strip_keys "$NOTI_ENT"
-
-          # 确保 App Groups 正确、且主 App 含 Push（aps-environment）
           /usr/libexec/PlistBuddy -c "Delete :com.apple.security.application-groups" "$APP_ENT" || true
           /usr/libexec/PlistBuddy -c "Add :com.apple.security.application-groups array" "$APP_ENT"
           /usr/libexec/PlistBuddy -c "Add :com.apple.security.application-groups:0 string $APP_GROUP_ID" "$APP_ENT"
-
           /usr/libexec/PlistBuddy -c "Delete :aps-environment" "$APP_ENT" || true
           /usr/libexec/PlistBuddy -c "Add :aps-environment string production" "$APP_ENT"
 
+          # 扩展：仅 App Groups；无 aps-environment
           for f in "$SHARE_ENT" "$NOTI_ENT"; do
+            strip_keys "$f"
             /usr/libexec/PlistBuddy -c "Delete :aps-environment" "$f" || true
             /usr/libexec/PlistBuddy -c "Delete :com.apple.security.application-groups" "$f" || true
             /usr/libexec/PlistBuddy -c "Add :com.apple.security.application-groups array" "$f"
             /usr/libexec/PlistBuddy -c "Add :com.apple.security.application-groups:0 string $APP_GROUP_ID" "$f"
           done
 
-          echo "=== After patch ==="
+          echo "=== After entitlements patch ==="
           /usr/libexec/PlistBuddy -c "Print" "$APP_ENT" || true
           /usr/libexec/PlistBuddy -c "Print" "$SHARE_ENT" || true
           /usr/libexec/PlistBuddy -c "Print" "$NOTI_ENT" || true
 
+      - name: Install CocoaPods & pod install
+        script: |
+          set -euo pipefail
+          cd "$CM_BUILD_DIR/ios"
+          gem uninstall cocoapods -a -x || true
+          gem install cocoapods -v 1.16.1
+          pod repo update
+          pod install
+
       - name: Fetch signing files (App Store) & import certs
         script: |
+          set -euo pipefail
           app-store-connect fetch-signing-files "$MAIN_BUNDLE_ID" --type IOS_APP_STORE --create
           app-store-connect fetch-signing-files "$SHARE_BUNDLE_ID" --type IOS_APP_STORE --create
           app-store-connect fetch-signing-files "$NOTI_BUNDLE_ID"  --type IOS_APP_STORE --create
@@ -86,18 +123,23 @@ workflows:
 
       - name: Show signing files
         script: |
+          set -euo pipefail
+          echo "=== Keychain identities ==="
           security find-identity -v -p codesigning /Users/builder/Library/Keychains/login.keychain-db || true
+          echo "=== Provisioning Profiles ==="
           ls -la "/Users/builder/Library/MobileDevice/Provisioning Profiles"/*.mobileprovision 2>/dev/null || echo "No .mobileprovision"
           ls -la "/Users/builder/Library/MobileDevice/Provisioning Profiles"/*.provisionprofile 2>/dev/null || echo "No .provisionprofile"
 
       - name: Apply profiles to Xcode targets
         script: |
-          cd $CM_BUILD_DIR/ios
+          set -euo pipefail
+          cd "$CM_BUILD_DIR/ios"
           xcode-project use-profiles
 
       - name: Build IPA (App Store export)
         script: |
-          cd $CM_BUILD_DIR/ios
+          set -euo pipefail
+          cd "$CM_BUILD_DIR/ios"
           cat > export_options.plist <<'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -116,11 +158,14 @@ workflows:
 
     artifacts:
       - ios/ipa/*.ipa
+      - ios/build/**/*.xcarchive
 
     publishing:
       app_store_connect:
-        # 用你的加密变量/密钥
         api_key: "$APP_STORE_CONNECT_PRIVATE_KEY"
         key_id: "$APP_STORE_CONNECT_KEY_ID"
         issuer_id: "$APP_STORE_CONNECT_ISSUER_ID"
         submit_to_testflight: true
+      email:
+        recipients:
+          - bill.fan4java@gmail.com
