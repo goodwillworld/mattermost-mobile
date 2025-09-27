@@ -13,7 +13,7 @@ workflows:
         MATCH_NOTIFICATION_PROFILE: "{{ NotificationProfile }}"  # NotificationService 配置文件
         CI: "true"  # 触发跳过 Solidarity
     scripts:
-      - name: Clean up parent directory
+      - name: 1 Clean up parent directory
         script: |
           rm -f /Users/builder/package.json /Users/builder/yarn.lock
       - name: Get packages
