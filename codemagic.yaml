@@ -65,11 +65,36 @@ workflows:
 
           yarn -v || npm i -g yarn
 
-      - name: Install JS deps
+      - name: Install JS deps (force Yarn 1, isolate project)
         script: |
           set -euo pipefail
+
+          # 1) 清理可能污染的 HOME 级 yarn 项目标识，避免把 /Users/builder 当作根
+          rm -f "$HOME/yarn.lock" "$HOME/package.json" "$HOME/.yarnrc.yml" || true
+
+          # 2) 使用 corepack 强制启用 Yarn 1（classic）
+          if command -v corepack >/dev/null 2>&1; then
+            corepack enable
+            corepack prepare "yarn@1.22.22" --activate
+          else
+            npm i -g yarn@1.22.22
+          fi
+
           cd "$CM_BUILD_DIR"
-          yarn install --frozen-lockfile
+          echo "Node: $(node -v)"
+          echo "Yarn: $(yarn -v || true)"
+
+          # 3) 优先用 yarn.lock；否则退回 npm ci
+          if [ -f "yarn.lock" ]; then
+            # Yarn 1 支持 --frozen-lockfile；Berry 的提示不会再出现
+            yarn install --frozen-lockfile
+          elif [ -f "package-lock.json" ]; then
+            npm ci
+          else
+            echo "No yarn.lock or package-lock.json found" >&2
+            exit 1
+          fi
+
 
       - name: Patch Podfile if Expo is NOT present
         script: |
