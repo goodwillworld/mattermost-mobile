@@ -4,6 +4,10 @@ workflows:
     instance_type: mac_mini_m2
     max_build_duration: 60
     environment:
+      groups:
+        - mm_common
+        - jboth_client
+        - ios_match
       vars:
         APP_NAME: "Mattermost"  # Xcode Scheme
         MAIN_BUNDLE_ID: "com.jboth.mine"
@@ -171,6 +175,11 @@ workflows:
       - name: Fetch signing files (App Store) & import certs
         script: |
           set -euo pipefail
+          test -n "${APP_STORE_CONNECT_ISSUER_ID:-}" || { echo "MISS ISSUER_ID"; exit 1; }
+          test -n "${APP_STORE_CONNECT_KEY_ID:-}"   || { echo "MISS KEY_ID"; exit 1; }
+          test -n "${APP_STORE_CONNECT_PRIVATE_KEY:-}" || { echo "MISS PRIVATE_KEY"; exit 1; }
+          echo "ASC credentials present."
+
           app-store-connect fetch-signing-files "$MAIN_BUNDLE_ID" --type IOS_APP_STORE --create
           app-store-connect fetch-signing-files "$SHARE_BUNDLE_ID" --type IOS_APP_STORE --create
           app-store-connect fetch-signing-files "$NOTI_BUNDLE_ID"  --type IOS_APP_STORE --create
