@@ -15,18 +15,15 @@ workflows:
         CI: "true"  # 跳过部分 RN 检查
       # 建议把以下三项设置为加密环境变量（在 Codemagic UI 中配置）
       # APP_STORE_CONNECT_PRIVATE_KEY: |
-      # APP_STORE_CONNECT_KEY_ID: UZ33M397NY  # 注意：CLI 用 KEY_IDENTIFIER
+      # APP_STORE_CONNECT_KEY_ID: UZ33M397NY
       # APP_STORE_CONNECT_ISSUER_ID: 26e601c9-c2f0-497a-a9e1-39a426cecf9a
       ios_signing:
         certificates:
           - DistributionCert  # UI 上传的证书名称
-        provisioning_profiles:  # profile 名称匹配 Codemagic 可用选项
-          - profile: AppStoreProfile  # 主 App
-            environment_variable: MAIN_PROFILE_PATH
-          - profile: ShareProfile  # Share Extension
-            environment_variable: SHARE_PROFILE_PATH
-          - profile: NotificationProfile  # Notification Service
-            environment_variable: NOTI_PROFILE_PATH
+        provisioning_profiles:  # 手动模式：直接引用 UI 上传的 Profiles 名称
+          - MainAppProfile  # 主 App Profile UI 名称
+          - ShareProfile  # Share Extension Profile UI 名称
+          - NotificationProfile  # Notification Service Profile UI 名称
 
     cache:
       cache_paths:
@@ -180,32 +177,12 @@ workflows:
           pod repo update
           pod install
 
-      - name: Fetch signing files (App Store) & import certs
+      - name: Initialize keychain and import UI signing files
         script: |
           set -euo pipefail
           keychain initialize
-          test -n "${APP_STORE_CONNECT_ISSUER_ID:-}" || { echo "MISS ISSUER_ID"; exit 1; }
-          test -n "${APP_STORE_CONNECT_KEY_IDENTIFIER:-}"   || { echo "MISS KEY_IDENTIFIER"; exit 1; }
-          test -n "${APP_STORE_CONNECT_PRIVATE_KEY:-}" || { echo "MISS PRIVATE_KEY"; exit 1; }
-          echo "ASC credentials present."
-
-          # 只 fetch Profiles（无 CERTIFICATE_PRIVATE_KEY 时跳过证书）
-          app-store-connect fetch-signing-files "$MAIN_BUNDLE_ID" --type IOS_APP_STORE --create
-          app-store-connect fetch-signing-files "$SHARE_BUNDLE_ID" --type IOS_APP_STORE --create
-          app-store-connect fetch-signing-files "$NOTI_BUNDLE_ID"  --type IOS_APP_STORE --create
-
-          # 导入 UI 证书到密钥链
+          # 导入 UI 证书和 Profiles 到密钥链（Codemagic 自动处理，无需 API）
           keychain add-certificates
-
-          # 设置 Profiles 路径环境变量（用于 ios_signing 验证）
-          export MAIN_PROFILE_PATH=$(find /Users/builder/Library/MobileDevice/Provisioning\ Profiles -name "*${MAIN_BUNDLE_ID}*" -type f | head -1)
-          export SHARE_PROFILE_PATH=$(find /Users/builder/Library/MobileDevice/Provisioning\ Profiles -name "*${SHARE_BUNDLE_ID}*" -type f | head -1)
-          export NOTI_PROFILE_PATH=$(find /Users/builder/Library/MobileDevice/Provisioning\ Profiles -name "*${NOTI_BUNDLE_ID}*" -type f | head -1)
-
-          # 验证路径（可选，调试用）
-          echo "Main Profile: $MAIN_PROFILE_PATH"
-          echo "Share Profile: $SHARE_PROFILE_PATH"
-          echo "Noti Profile: $NOTI_PROFILE_PATH"
 
       - name: Show signing files
         script: |
@@ -249,7 +226,7 @@ workflows:
     publishing:
       app_store_connect:
         api_key: "$APP_STORE_CONNECT_PRIVATE_KEY"
-        key_id: "$APP_STORE_CONNECT_KEY_ID"  # Publishing 用 KEY_ID；CLI 用 KEY_IDENTIFIER
+        key_id: "$APP_STORE_CONNECT_KEY_ID"
         issuer_id: "$APP_STORE_CONNECT_ISSUER_ID"
         submit_to_testflight: true
       email:
