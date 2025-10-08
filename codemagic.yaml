@@ -20,12 +20,12 @@ workflows:
       ios_signing:
         certificates:
           - DistributionCert  # UI 上传的证书名称
-        provisioning_profiles:  # 手动模式：每个 Bundle 的 Profiles 路径
-          - profile: main_app_profile
+        provisioning_profiles:  # 修复：profile 名称匹配 Codemagic 可用选项
+          - profile: AppStoreProfile  # 主 App
             environment_variable: MAIN_PROFILE_PATH
-          - profile: share_extension_profile
+          - profile: ShareProfile  # Share Extension
             environment_variable: SHARE_PROFILE_PATH
-          - profile: notification_profile
+          - profile: NotificationProfile  # Notification Service
             environment_variable: NOTI_PROFILE_PATH
 
     cache:
