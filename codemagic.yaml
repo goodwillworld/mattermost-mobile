@@ -20,10 +20,10 @@ workflows:
       ios_signing:
         certificates:
           - DistributionCert  # UI 上传的证书名称
-        provisioning_profiles:  # profile 名称匹配 UI 可用选项
-          - AppStoreProfile  # 主 App Profile UI 名称
-          - ShareProfile  # Share Extension Profile UI 名称
-          - NotificationProfile  # Notification Service Profile UI 名称
+        provisioning_profiles:  # 修复：profile 名称匹配可用选项
+          - jboth_chat  # 主 App Profile UI 名称
+          - jboth_share  # Share Extension Profile UI 名称
+          - jboth_notification  # Notification Service Profile UI 名称
 
     cache:
       cache_paths:
@@ -189,31 +189,9 @@ workflows:
           set -euo pipefail
           echo "=== Keychain identities ==="
           security find-identity -v -p codesigning /Users/builder/Library/Keychains/login.keychain-db || true
-          echo "=== Certificate Details (DistributionCert) ==="
-          security find-identity -v -p codesigning /Users/builder/Library/Keychains/login.keychain-db | grep -i rong || echo "Rong Fan certificate: Active, no password (imported from UI)"
           echo "=== Provisioning Profiles ==="
           ls -la "/Users/builder/Library/MobileDevice/Provisioning Profiles"/*.mobileprovision 2>/dev/null || echo "No .mobileprovision"
           ls -la "/Users/builder/Library/MobileDevice/Provisioning Profiles"/*.provisionprofile 2>/dev/null || echo "No .provisionprofile"
-          # 打印每个 Profile 详情（名称、Team ID、UUID、Capabilities）
-          echo "=== Profiles Details (Confirm 3 Active Profiles) ==="
-          profile_count=0
-          for profile in "/Users/builder/Library/MobileDevice/Provisioning Profiles"/*.mobileprovision; do
-            if [ -f "$profile" ]; then
-              profile_count=$((profile_count + 1))
-              echo "Profile $profile_count:"
-              security cms -D -i "$profile" | grep -E "(Name|TeamID|UUID|application-groups|aps-environment)" || true
-              echo "---"
-            fi
-          done
-          if [ $profile_count -eq 3 ]; then
-            echo "Confirmed: 3 Active Profiles (Team ID: 86LQYD6RYR, Names: AppStoreProfile/ShareProfile/NotificationProfile)"
-          else
-            echo "Warning: Found $profile_count Profiles (expected 3)"
-          fi
-          echo "=== Bundle ID Matching Check ==="
-          echo "Main: $MAIN_BUNDLE_ID"
-          echo "Share: $SHARE_BUNDLE_ID"
-          echo "Noti: $NOTI_BUNDLE_ID"
 
       - name: Apply profiles to Xcode targets
         script: |
@@ -232,9 +210,9 @@ workflows:
             <key>method</key><string>app-store</string>
             <key>signingStyle</key><string>manual</string>
             <key>provisioningProfiles</key><dict>
-              <key>com.jboth.mine</key><string>AppStoreProfile</string>
-              <key>com.jboth.mine.MattermostShare</key><string>ShareProfile</string>
-              <key>com.jboth.mine.NotificationService</key><string>NotificationProfile</string>
+              <key>com.jboth.mine</key><string>jboth_chat</string>
+              <key>com.jboth.mine.MattermostShare</key><string>jboth_share</string>
+              <key>com.jboth.mine.NotificationService</key><string>jboth_notification</string>
             </dict>
             <key>uploadSymbols</key><true/>
             <key>compileBitcode</key><false/>
