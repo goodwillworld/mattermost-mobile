@@ -18,13 +18,15 @@ workflows:
       # APP_STORE_CONNECT_KEY_ID: UZ33M397NY
       # APP_STORE_CONNECT_ISSUER_ID: 26e601c9-c2f0-497a-a9e1-39a426cecf9a
       ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.jboth.mine  # 自动匹配扩展
         certificates:
           - DistributionCert  # UI 上传的证书名称
-        provisioning_profiles:  # profile 名称匹配 UI 可用选项
-          - jboth_chat  # 主 App Profile UI 名称
-          - jboth_share  # Share Extension Profile UI 名称
-          - jboth_notification
-          # - NotificationProfile  # Notification Service Profile UI 名称
+
+        # provisioning_profiles:  # profile 名称匹配 UI 可用选项
+        #   - jboth_chat  # 主 App Profile UI 名称
+        #   - jboth_share  # Share Extension Profile UI 名称
+        #   - jboth_notification  # Notification Service Profile UI 名称
 
     cache:
       cache_paths:
@@ -193,6 +195,17 @@ workflows:
           echo "=== Provisioning Profiles ==="
           ls -la "/Users/builder/Library/MobileDevice/Provisioning Profiles"/*.mobileprovision 2>/dev/null || echo "No .mobileprovision"
           ls -la "/Users/builder/Library/MobileDevice/Provisioning Profiles"/*.provisionprofile 2>/dev/null || echo "No .provisionprofile"
+          # 打印每个 Profile 的 UUID 和 Capabilities（诊断用）
+          echo "=== Profile UUIDs and Capabilities ==="
+          for profile in "/Users/builder/Library/MobileDevice/Provisioning Profiles"/*.mobileprovision; do
+            if [ -f "$profile" ]; then
+              echo "Profile file: $profile"
+              security cms -D -i "$profile" | grep -A1 "UUID" | sed 's/^[ \t]*//' || true
+              security cms -D -i "$profile" | grep -A5 -B5 "application-groups" || true
+              security cms -D -i "$profile" | grep -A1 "aps-environment" || true
+              echo "---"
+            fi
+          done
 
       - name: Apply profiles to Xcode targets
         script: |
@@ -211,9 +224,9 @@ workflows:
             <key>method</key><string>app-store</string>
             <key>signingStyle</key><string>manual</string>
             <key>provisioningProfiles</key><dict>
-              <key>com.jboth.mine</key><string>5bc12040-8524-4105-8aa9-4f98e6e7f0b9</string>
-              <key>com.jboth.mine.MattermostShare</key><string>26366658-c6ec-4723-9cb3-f1be41ac045b</string>
-              <key>com.jboth.mine.NotificationService</key><string>02595bab-cbe4-4bdb-b6d5-6c41aeac10e6</string>
+              <key>com.jboth.mine</key><string>5bc12040-8524-4105-8aa9-4f98e6e7f0b9</string>  # 替换为实际主 App UUID
+              <key>com.jboth.mine.MattermostShare</key><string>26366658-c6ec-4723-9cb3-f1be41ac045b</string>  # 替换为 Share UUID
+              <key>com.jboth.mine.NotificationService</key><string>02595bab-cbe4-4bdb-b6d5-6c41aeac10e6</string>  # 替换为 Notification UUID
             </dict>
             <key>uploadSymbols</key><true/>
             <key>compileBitcode</key><false/>
