@@ -18,8 +18,15 @@ workflows:
       # APP_STORE_CONNECT_KEY_ID: UZ33M397NY
       # APP_STORE_CONNECT_ISSUER_ID: 26e601c9-c2f0-497a-a9e1-39a426cecf9a
       ios_signing:
-          certificate: "DistributionCert"  # UI 中的确切名称
-          certificate_password: ""  # 空密码
+        certificates:
+          - DistributionCert  # UI 引用名称
+        provisioning_profiles:  # 必需：列出每个 Bundle 的 Profiles（通过脚本设置的环境变量路径）
+          - profile: main_app_profile  # 任意唯一引用名
+            environment_variable: MAIN_PROFILE_PATH
+          - profile: share_extension_profile
+            environment_variable: SHARE_PROFILE_PATH
+          - profile: notification_profile
+            environment_variable: NOTI_PROFILE_PATH
 
     cache:
       cache_paths:
@@ -188,6 +195,16 @@ workflows:
           app-store-connect fetch-signing-files "$NOTI_BUNDLE_ID"  --type IOS_APP_STORE --create --no-certificate
           keychain add-certificates
 
+         # 设置 Profiles 路径环境变量（用于 ios_signing 验证）
+          export MAIN_PROFILE_PATH=$(find /Users/builder/Library/MobileDevice/Provisioning\ Profiles -name "*${MAIN_BUNDLE_ID}*" -type f | head -1)
+          export SHARE_PROFILE_PATH=$(find /Users/builder/Library/MobileDevice/Provisioning\ Profiles -name "*${SHARE_BUNDLE_ID}*" -type f | head -1)
+          export NOTI_PROFILE_PATH=$(find /Users/builder/Library/MobileDevice/Provisioning\ Profiles -name "*${NOTI_BUNDLE_ID}*" -type f | head -1)
+
+          # 验证路径（可选，调试用）
+          echo "Main Profile: $MAIN_PROFILE_PATH"
+          echo "Share Profile: $SHARE_PROFILE_PATH"
+          echo "Noti Profile: $NOTI_PROFILE_PATH"
+
       - name: Show signing files
         script: |
           set -euo pipefail
@@ -198,6 +215,12 @@ workflows:
           ls -la "/Users/builder/Library/MobileDevice/Provisioning Profiles"/*.provisionprofile 2>/dev/null || echo "No .provisionprofile"
 
       - name: Apply profiles to Xcode targets
+        script: |
+          set -euo pipefail
+          cd "$CM_BUILD_DIR/ios"
+          xcode-project use-profiles
+
+      - name: Apply provisioning profiles to Xcode project
         script: |
           set -euo pipefail
           cd "$CM_BUILD_DIR/ios"
