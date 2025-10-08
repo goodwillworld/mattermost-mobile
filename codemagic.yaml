@@ -20,8 +20,8 @@ workflows:
       ios_signing:
         certificates:
           - DistributionCert  # UI 上传的证书名称
-        provisioning_profiles:  # 手动模式：直接引用 UI 上传的 Profiles 名称
-          - MainAppProfile  # 主 App Profile UI 名称
+        provisioning_profiles:  # 修复：profile 名称匹配可用选项
+          - AppStoreProfile  # 主 App Profile UI 名称
           - ShareProfile  # Share Extension Profile UI 名称
           - NotificationProfile  # Notification Service Profile UI 名称
 
