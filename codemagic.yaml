@@ -21,9 +21,10 @@ workflows:
         certificates:
           - DistributionCert  # UI 上传的证书名称
         provisioning_profiles:  # profile 名称匹配 UI 可用选项
-          - AppStoreProfile  # 主 App Profile UI 名称
-          - ShareProfile  # Share Extension Profile UI 名称
-          - NotificationProfile  # Notification Service Profile UI 名称
+          - jboth_chat  # 主 App Profile UI 名称
+          - jboth_share  # Share Extension Profile UI 名称
+          - jboth_notification
+          # - NotificationProfile  # Notification Service Profile UI 名称
 
     cache:
       cache_paths:
@@ -210,9 +211,9 @@ workflows:
             <key>method</key><string>app-store</string>
             <key>signingStyle</key><string>manual</string>
             <key>provisioningProfiles</key><dict>
-              <key>com.jboth.mine</key><string>AppStoreProfile</string>
-              <key>com.jboth.mine.MattermostShare</key><string>ShareProfile</string>
-              <key>com.jboth.mine.NotificationService</key><string>NotificationProfile</string>
+              <key>com.jboth.mine</key><string>jboth_chat</string>
+              <key>com.jboth.mine.MattermostShare</key><string>jboth_share</string>
+              <key>com.jboth.mine.NotificationService</key><string>jboth_notification</string>
             </dict>
             <key>uploadSymbols</key><true/>
             <key>compileBitcode</key><false/>
