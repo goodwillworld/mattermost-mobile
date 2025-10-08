@@ -19,9 +19,9 @@ workflows:
       # APP_STORE_CONNECT_ISSUER_ID: 26e601c9-c2f0-497a-a9e1-39a426cecf9a
       ios_signing:
         certificates:
-          - DistributionCert  # UI 引用名称
-        provisioning_profiles:  # 必需：列出每个 Bundle 的 Profiles（通过脚本设置的环境变量路径）
-          - profile: main_app_profile  # 任意唯一引用名
+          - DistributionCert  # UI 上传的证书名称
+        provisioning_profiles:  # 手动模式：每个 Bundle 的 Profiles 路径
+          - profile: main_app_profile
             environment_variable: MAIN_PROFILE_PATH
           - profile: share_extension_profile
             environment_variable: SHARE_PROFILE_PATH
@@ -183,19 +183,21 @@ workflows:
       - name: Fetch signing files (App Store) & import certs
         script: |
           set -euo pipefail
-          keychain initialize  # 确保密钥链初始化
+          keychain initialize
           test -n "${APP_STORE_CONNECT_ISSUER_ID:-}" || { echo "MISS ISSUER_ID"; exit 1; }
           test -n "${APP_STORE_CONNECT_KEY_ID:-}"   || { echo "MISS KEY_ID"; exit 1; }
           test -n "${APP_STORE_CONNECT_PRIVATE_KEY:-}" || { echo "MISS PRIVATE_KEY"; exit 1; }
           echo "ASC credentials present."
 
-          # 只 fetch Profiles，使用上传的证书
+          # 只 fetch Profiles，使用 UI 上传的证书
           app-store-connect fetch-signing-files "$MAIN_BUNDLE_ID" --type IOS_APP_STORE --create --no-certificate
           app-store-connect fetch-signing-files "$SHARE_BUNDLE_ID" --type IOS_APP_STORE --create --no-certificate
           app-store-connect fetch-signing-files "$NOTI_BUNDLE_ID"  --type IOS_APP_STORE --create --no-certificate
+
+          # 导入 UI 证书到密钥链
           keychain add-certificates
 
-         # 设置 Profiles 路径环境变量（用于 ios_signing 验证）
+          # 设置 Profiles 路径环境变量（用于 ios_signing 验证）
           export MAIN_PROFILE_PATH=$(find /Users/builder/Library/MobileDevice/Provisioning\ Profiles -name "*${MAIN_BUNDLE_ID}*" -type f | head -1)
           export SHARE_PROFILE_PATH=$(find /Users/builder/Library/MobileDevice/Provisioning\ Profiles -name "*${SHARE_BUNDLE_ID}*" -type f | head -1)
           export NOTI_PROFILE_PATH=$(find /Users/builder/Library/MobileDevice/Provisioning\ Profiles -name "*${NOTI_BUNDLE_ID}*" -type f | head -1)
@@ -215,12 +217,6 @@ workflows:
           ls -la "/Users/builder/Library/MobileDevice/Provisioning Profiles"/*.provisionprofile 2>/dev/null || echo "No .provisionprofile"
 
       - name: Apply profiles to Xcode targets
-        script: |
-          set -euo pipefail
-          cd "$CM_BUILD_DIR/ios"
-          xcode-project use-profiles
-
-      - name: Apply provisioning profiles to Xcode project
         script: |
           set -euo pipefail
           cd "$CM_BUILD_DIR/ios"
