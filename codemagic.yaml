@@ -20,7 +20,7 @@ workflows:
       ios_signing:
         certificates:
           - DistributionCert  # UI 上传的证书名称
-        provisioning_profiles:  # 修复：profile 名称匹配可用选项
+        provisioning_profiles:  # profile 名称匹配 UI 可用选项
           - AppStoreProfile  # 主 App Profile UI 名称
           - ShareProfile  # Share Extension Profile UI 名称
           - NotificationProfile  # Notification Service Profile UI 名称
@@ -209,6 +209,11 @@ workflows:
           <plist version="1.0"><dict>
             <key>method</key><string>app-store</string>
             <key>signingStyle</key><string>manual</string>
+            <key>provisioningProfiles</key><dict>
+              <key>com.jboth.mine</key><string>AppStoreProfile</string>
+              <key>com.jboth.mine.MattermostShare</key><string>ShareProfile</string>
+              <key>com.jboth.mine.NotificationService</key><string>NotificationProfile</string>
+            </dict>
             <key>uploadSymbols</key><true/>
             <key>compileBitcode</key><false/>
           </dict></plist>
