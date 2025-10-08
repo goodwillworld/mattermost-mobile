@@ -211,9 +211,9 @@ workflows:
             <key>method</key><string>app-store</string>
             <key>signingStyle</key><string>manual</string>
             <key>provisioningProfiles</key><dict>
-              <key>com.jboth.mine</key><string>jboth_chat</string>
-              <key>com.jboth.mine.MattermostShare</key><string>jboth_share</string>
-              <key>com.jboth.mine.NotificationService</key><string>jboth_notification</string>
+              <key>com.jboth.mine</key><string>5bc12040-8524-4105-8aa9-4f98e6e7f0b9</string>
+              <key>com.jboth.mine.MattermostShare</key><string>26366658-c6ec-4723-9cb3-f1be41ac045b</string>
+              <key>com.jboth.mine.NotificationService</key><string>02595bab-cbe4-4bdb-b6d5-6c41aeac10e6</string>
             </dict>
             <key>uploadSymbols</key><true/>
             <key>compileBitcode</key><false/>
