@@ -15,13 +15,14 @@ workflows:
         APP_GROUP_ID: "group.com.jboth.mine"
         CI: "true"
       ios_signing:
-        # 如果你要走 Ad Hoc，请把 distribution_type 改成 ad_hoc
-        distribution_type: app_store     # app_store | ad_hoc | development | enterprise
+        # 如果你只想生成 Ad Hoc 包，请把 distribution_type 改为 ad_hoc
+        distribution_type: app_store   # app_store | ad_hoc | development | enterprise
         bundle_identifier: com.jboth.mine
 
     scripts:
       - name: Print Xcode / Ruby / CocoaPods versions
         script: |
+          set -e
           xcodebuild -version
           ruby -v
           pod --version
@@ -29,45 +30,36 @@ workflows:
       - name: Use Node 20 LTS (via nvm，无 nvm 时自动回退)
         script: |
           set -euo pipefail
-
-          PODFILE="ios/Podfile"
-          if [ -f "$PODFILE" ]; then
-            cat > patch_podfile.rb <<'RB'
-          path = "ios/Podfile"
-          s = File.read(path)
-
-          # 仅当是旧写法时才替换
-          if s.include?("require Pod::Executable.execute_command('node', ['-p'")
-            s.gsub!(
-              /require Pod::Executable.execute_command\(\s*'node'.*?\)\s*\]/m,
-              "react_native_pods = Pod::Executable.execute_command(\n  'node',\n  [\n    '-p',\n    <<~'NODE',\n      require.resolve(\n        'react-native/scripts/react_native_pods.rb',\n        { paths: [process.argv[1]] },\n      )\n    NODE,\n    Pod::Config.instance.project_root.to_s\n  ]\n)\nrequire react_native_pods"
-            )
-            File.write(path, s)
-            puts "Patched Podfile resolver to use project_root"
+          export NVM_DIR="$HOME/.nvm"
+          if [ -s "$NVM_DIR/nvm.sh" ]; then
+            . "$NVM_DIR/nvm.sh"
+            nvm install 20
+            nvm use 20
+            # 持久化 nvm 到后续步骤
+            echo 'export NVM_DIR="$HOME/.nvm"' >> $CM_ENV
+            echo '. "$NVM_DIR/nvm.sh" && nvm use 20 >/dev/null' >> $CM_ENV
           else
-            puts "Podfile resolver already modernized or not matching; skip."
-          end
-          RB
-            ruby patch_podfile.rb
-          else
-            echo "Podfile not found at ios/Podfile"
+            echo "nvm not found, fallback to Homebrew node@20"
+            brew update || true
+            brew install node@20 || true
+            export PATH="/opt/homebrew/opt/node@20/bin:$PATH"
+            echo 'export PATH="/opt/homebrew/opt/node@20/bin:$PATH"' >> $CM_ENV
           fi
-
           node -v
           npm -v || true
           yarn -v || true
 
       - name: Install JS deps (project root)
         script: |
-          # 若使用 npm：改为 npm ci
+          set -e
           yarn install --frozen-lockfile || npm ci
 
       - name: Patch Podfile resolver (point to project root)
         script: |
-          set -e
+          set -euo pipefail
           PODFILE="ios/Podfile"
           if [ -f "$PODFILE" ]; then
-            ruby - <<'RUBY'
+            cat > patch_podfile.rb <<'RB'
             path = "ios/Podfile"
             s = File.read(path)
             if s.include?("require Pod::Executable.execute_command('node', ['-p'")
@@ -80,14 +72,15 @@ workflows:
             else
               puts "Podfile resolver already modernized or not matching; skip."
             end
-            RUBY
+            RB
+            ruby patch_podfile.rb
           else
             echo "Podfile not found at ios/Podfile"
           fi
 
-      - name: Create setup_signing.sh (strict) and run
+      - name: Create and run setup_signing.sh (strict)
         script: |
-          set -e
+          set -euo pipefail
           mkdir -p scripts
           cat > scripts/setup_signing.sh <<'EOF'
           #!/usr/bin/env bash
@@ -218,18 +211,20 @@ workflows:
 
       - name: Install pods
         script: |
+          set -e
           cd ios
           pod repo update || true
           pod install --repo-update
 
       - name: Apply provisioning profiles to Xcode project
         script: |
-          # 将已上传/抓取到的 profiles 引用到 Xcode 工程
+          set -e
           xcode-project use-profiles
 
       - name: Generate export options (App Store)
         script: |
-          # 如果你要 Ad Hoc 出包用于企业分发/真机安装，把 method 改成 ad-hoc，并将 ios_signing.distribution_type 改为 ad_hoc
+          set -e
+          # 如果你要 Ad Hoc 包：把 method 改为 ad-hoc，并把 environment.ios_signing.distribution_type 改为 ad_hoc
           cat > export_options.plist <<'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -245,6 +240,7 @@ workflows:
 
       - name: Build archive
         script: |
+          set -e
           cd ios
           xcodebuild -workspace Mattermost.xcworkspace \
             -scheme Mattermost \
@@ -256,6 +252,7 @@ workflows:
 
       - name: Export IPA
         script: |
+          set -e
           cd ios
           xcodebuild -exportArchive \
             -archivePath build/ios/xcarchive/Mattermost.xcarchive \
