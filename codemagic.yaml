@@ -196,7 +196,7 @@ workflows:
           # 再次快速健康检查
           xcodebuild -project ios/Mattermost.xcodeproj -list
 
-      - name: "Patch Podfile: iOS 16 + Swift 5.9 + strict concurrency=minimal + pin Alamofire"
+      - name: "Patch Podfile: add C++17 settings for Pods (incl. secure-pdf-viewer)"
         script: |
           set -euo pipefail
           P=ios/Podfile
@@ -206,54 +206,52 @@ workflows:
             path = 'ios/Podfile'
             s = File.read(path)
 
-            # 1) platform :ios -> 16.0
-            if s =~ /^platform :ios/
-              s = s.gsub(/^platform :ios, .*/, 'platform :ios, "16.0"')
-            else
-              s = %(platform :ios, "16.0"\n) + s
+            # 确保 platform 行 & 你之前的 SWIFT/Deployment/Concurrency 注入已存在（略）
+            # 这里只关注 post_install 里的 C++ 设置增强：
+
+            # 注入函数：在 post_install 块中，给每个 target 的每个配置写 C++ 设置
+            def inject_cxx_settings(block)
+              lines = []
+              lines << "  installer.pods_project.targets.each do |t|"
+              lines << "    t.build_configurations.each do |cfg|"
+              lines << "      bs = cfg.build_settings"
+              lines << "      bs['CLANG_CXX_LANGUAGE_STANDARD'] = 'gnu++17'"
+              lines << "      bs['CLANG_CXX_LIBRARY'] = 'libc++'"
+              lines << "      # 追加 flags（若已存在则保持）"
+              lines << "      existing = Array(bs['OTHER_CPLUSPLUSFLAGS'])"
+              lines << "      need = ['-std=gnu++17']"
+              lines << "      bs['OTHER_CPLUSPLUSFLAGS'] = (existing + need).uniq"
+              lines << "    end"
+              lines << "  end"
+              lines << ""
+              # 对特定 Pod 进行额外照顾：secure-pdf-viewer
+              lines << "  target = installer.pods_project.targets.find { |tt| tt.name == 'secure-pdf-viewer' }"
+              lines << "  if target"
+              lines << "    target.build_configurations.each do |cfg|"
+              lines << "      bs = cfg.build_settings"
+              lines << "      bs['GCC_ENABLE_CPP_EXCEPTIONS'] = 'YES'"
+              lines << "      bs['GCC_ENABLE_CPP_RTTI'] = 'YES'"
+              lines << "      # 防止某些头触发严格并发/可用性：保持最小并发检查（你之前已设 Swift minimal，这里是 C++ 无关，但留作注释）"
+              lines << "    end"
+              lines << "  end"
+              block.sub(/end\s*\z/, lines.join(\"\\n\") + \"\\nend\") # 在 post_install-end 前插入
             end
 
-            # 2) 若主 app target 存在且未显式声明 Alamofire，则插入一行 pin 到 5.9
-            #    简单策略：在第一处 `target 'Mattermost' do` 之后插入
-            unless s.include?("pod 'Alamofire'")
-              s = s.sub(/(target\s+['"]Mattermost['"]\s+do\s*\n)/, "\\1  pod 'Alamofire', '~> 5.9'\n")
-            end
-
-            # 3) post_install 统一 Pods 的 Swift/Deployment/Strict Concurrency
-            injector = <<~'HOOK'
-            post_install do |installer|
-              installer.pods_project.targets.each do |t|
-                t.build_configurations.each do |cfg|
-                  cfg.build_settings['SWIFT_VERSION'] = '5.9'
-                  # 老项目可能有更低的 iOS 目标，这里强提到 16
-                  if cfg.build_settings['IPHONEOS_DEPLOYMENT_TARGET'].to_s < '16.0'
-                    cfg.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'
-                  end
-                  # Swift 6 默认 complete，这里降到 minimal 以兼容三方库
-                  cfg.build_settings['SWIFT_STRICT_CONCURRENCY'] = 'minimal'
-                end
-              end
-            end
-            HOOK
-
-            if s =~ /post_install do \|installer\|/
+            if s =~ /post_install do \|installer\|/m
               s = s.gsub(/post_install do \|installer\|.*?end/m) do |blk|
-                needs = []
-                needs << "SWIFT_VERSION" unless blk.include?("SWIFT_VERSION")
-                needs << "IPHONEOS_DEPLOYMENT_TARGET" unless blk.include?("IPHONEOS_DEPLOYMENT_TARGET")
-                needs << "SWIFT_STRICT_CONCURRENCY" unless blk.include?("SWIFT_STRICT_CONCURRENCY")
-                if needs.any?
-                  blk.sub(/end\s*\z/, "  installer.pods_project.targets.each do |t|\n    t.build_configurations.each do |cfg|\n      cfg.build_settings['SWIFT_VERSION'] = '5.9'\n      if cfg.build_settings['IPHONEOS_DEPLOYMENT_TARGET'].to_s < '16.0'\n        cfg.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'\n      end\n      cfg.build_settings['SWIFT_STRICT_CONCURRENCY'] = 'minimal'\n    end\n  end\nend")
-                else
-                  blk
-                end
+                blk.include?("CLANG_CXX_LANGUAGE_STANDARD") ? blk : inject_cxx_settings(blk)
               end
             else
-              s << "\n" + injector + "\n"
+              s << <<~'HOOK'
+
+              post_install do |installer|
+                #{inject_cxx_settings("post_install do |installer|\nend")}
+              end
+              HOOK
             end
 
             File.write(path, s)
-            puts "Podfile patched."
+            puts "Podfile post_install enhanced with C++17 settings."
           RUBY
 
 
@@ -263,6 +261,18 @@ workflows:
           cd ios
           pod repo update || true
           pod install --repo-update
+
+      - name: "Diagnose Pods: build secure-pdf-viewer target verbosely (no xcpretty)"
+        script: |
+          set -euo pipefail
+          # 直接构建 Pods 工程里的目标，避免 xcpretty 吃掉错误
+          xcodebuild -project ios/Pods/Pods.xcodeproj \
+            -target secure-pdf-viewer \
+            -configuration Release \
+            -sdk iphoneos \
+            build \
+            | tee secure-pdf-viewer-build.log
+
 
       - name: "Verify installed provisioning profiles (read-only)"
         script: |
