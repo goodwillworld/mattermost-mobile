@@ -56,7 +56,7 @@ workflows:
           npm ci --prefer-offline --no-audit --progress=false
 
       # --- 2) 可选：恢复健康的 pbxproj（如果你仓库里有 .clean 备份）---
-      - name: Optional: restore healthy pbxproj if .clean exists
+      - name: Optional restore healthy pbxproj if .clean exists
         script: |
           set -euo pipefail
           if [ -f "ios/Mattermost.xcodeproj/project.pbxproj.clean" ]; then
