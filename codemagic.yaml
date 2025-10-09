@@ -219,6 +219,18 @@ workflows:
           </plist>
           EOF
 
+      - name: "List targets/schemes via project only"
+        script: |
+          set -e
+          xcodebuild -project ios/Mattermost.xcodeproj -list
+
+      - name: "Verify workspace sees project"
+        script: |
+          set -e
+          ls -l ios/Mattermost.xcodeproj || true
+          /usr/libexec/PlistBuddy -c "Print :workspace:FileRefs" ios/Mattermost.xcworkspace/contents.xcworkspacedata 2>/dev/null || cat ios/Mattermost.xcworkspace/contents.xcworkspacedata
+
+
       - name: Build archive
         script: |
           set -e
