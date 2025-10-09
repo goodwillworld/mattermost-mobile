@@ -91,23 +91,18 @@ workflows:
           pod repo update || true
           pod install --repo-update
 
-      - name: "Force replace pbxproj with known-good copy"
+      - name: "Force replace pbxproj with known-good copy (.clean)"
         script: |
           set -euo pipefail
-          # 请将一份能在你本地 Xcode 正常 Archive 的 pbxproj 放进仓库：
-          # 路径：ios/Mattermost.xcodeproj/project.pbxproj.clean
           if [ -f ios/Mattermost.xcodeproj/project.pbxproj.clean ]; then
             cp ios/Mattermost.xcodeproj/project.pbxproj.clean ios/Mattermost.xcodeproj/project.pbxproj
-            echo "Replaced pbxproj with known-good copy."
+            echo "Replaced pbxproj with known-good copy (.clean)."
           else
             echo "ERROR: Missing ios/Mattermost.xcodeproj/project.pbxproj.clean"
-            echo "请把本地可编译的 pbxproj 提交到该路径，再重试。"
             exit 1
           fi
-
           # 只读健康检查（project 级别）
           xcodebuild -project ios/Mattermost.xcodeproj -list
-
 
       # 关键：还原干净的 pbxproj，保证不带之前错误注入
       - name: Restore clean pbxproj & sanity check
