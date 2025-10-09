@@ -100,6 +100,96 @@ workflows:
           echo "==> xcodebuild -project -list (must succeed)"
           xcodebuild -project ios/Mattermost.xcodeproj -list
 
+      - name: "Bump deployment target in project to iOS 16.0 (Release only)"
+        script: |
+          set -euo pipefail
+          if ! ruby -e "require 'xcodeproj'" 2>/dev/null; then
+            gem install xcodeproj --no-document
+            export GEM_HOME="$HOME/.gem"
+            export PATH="$HOME/.gem/bin:$PATH"
+            echo 'export GEM_HOME="$HOME/.gem"' >> $CM_ENV
+            echo 'export PATH="$HOME/.gem/bin:$PATH"' >> $CM_ENV
+          fi
+
+          ruby - <<'RB'
+            require 'xcodeproj'
+            proj = Xcodeproj::Project.open('ios/Mattermost.xcodeproj')
+            targets = ['Mattermost', 'MattermostShare', 'NotificationService']
+            proj.targets.each do |t|
+              next unless targets.include?(t.name)
+              t.build_configurations.each do |cfg|
+                next unless cfg.name == 'Release'
+                bs = cfg.build_settings
+                # 仅在小于 16.0 时提升；不向下覆盖
+                if bs['IPHONEOS_DEPLOYMENT_TARGET'].to_s < '16.0'
+                  bs['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'
+                end
+              end
+            end
+            proj.save
+            puts "Raised IPHONEOS_DEPLOYMENT_TARGET to 16.0 for Release configs."
+          RB
+
+          # 确认 project 仍可读
+          xcodebuild -project ios/Mattermost.xcodeproj -list
+
+      - name: "Patch Podfile: iOS 16 + Swift 5.9 + pin Alamofire"
+        script: |
+          set -euo pipefail
+          P=ios/Podfile
+          test -f "$P"
+
+          # 1) platform 设为 iOS 16.0（若已有更高版本则不降）
+          if grep -qE "^platform :ios" "$P"; then
+            perl -i -pe 's/^platform :ios, .*/platform :ios, "16.0"/' "$P"
+          else
+            sed -i '' '1iplatform :ios, "16.0"' "$P"
+          fi
+
+          # 2) 若未显式声明 Alamofire 版本，则 pin 到一个稳定分支（5.9.x）
+          #    （若你仓库里已固定版本，可跳过这一步）
+          if ! grep -q "pod 'Alamofire'" "$P"; then
+            echo "WARNING: Podfile 未找到 Alamofire 显式声明，跳过 pin。"
+          else
+            perl -i -pe "s/pod 'Alamofire'.*/pod 'Alamofire', '~> 5.9'/" "$P"
+          fi
+
+          # 3) post_install：统一把 Pods 的 SWIFT_VERSION 设为 5.9，并拉齐 iOS 16
+          #    若已有 post_install，则在其中追加设置；否则创建一个。
+          ruby - <<'RUBY'
+            path = 'ios/Podfile'
+            s = File.read(path)
+            hook = <<'HOOK'
+
+            post_install do |installer|
+              installer.pods_project.targets.each do |t|
+                t.build_configurations.each do |cfg|
+                  cfg.build_settings['SWIFT_VERSION'] = '5.9'
+                  # 有些 Pod 自己降版本，这里强制拉齐到 16.0
+                  if cfg.build_settings['IPHONEOS_DEPLOYMENT_TARGET'].to_s < '16.0'
+                    cfg.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'
+                  end
+                end
+              end
+            end
+            HOOK
+            if s =~ /post_install do \|installer\|/
+              # 已有 post_install，则只注入关键设置（幂等）
+              s = s.gsub(/post_install do \|installer\|.*?end/m) do |blk|
+                unless blk.include?("SWIFT_VERSION'") && blk.include?("IPHONEOS_DEPLOYMENT_TARGET")
+                  blk.sub(/end\s*\z/, "  installer.pods_project.targets.each do |t|\n    t.build_configurations.each do |cfg|\n      cfg.build_settings['SWIFT_VERSION'] = '5.9'\n      if cfg.build_settings['IPHONEOS_DEPLOYMENT_TARGET'].to_s < '16.0'\n        cfg.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'\n      end\n    end\n  end\nend")
+                else
+                  blk
+                end
+              end
+            else
+              s << "\n" + hook + "\n"
+            end
+            File.write(path, s)
+            puts "Podfile patched for iOS 16 + Swift 5.9."
+          RUBY
+
+
       - name: "Install pods"
         script: |
           set -e
