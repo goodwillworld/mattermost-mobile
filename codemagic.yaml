@@ -206,7 +206,7 @@ workflows:
       - name: Apply provisioning profiles to Xcode project
         script: |
           set -e
-          xcode-project use-profiles
+          xcode-project use-profiles --project ios/Mattermost.xcodeproj
 
       - name: Generate export options (App Store)
         script: |
