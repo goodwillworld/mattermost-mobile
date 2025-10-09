@@ -54,26 +54,13 @@ workflows:
           set -e
           yarn install --frozen-lockfile || npm ci
 
-      - name: Patch Podfile resolver (point to project root)
+      - name: Patch Podfile resolver (Perl in-place)
         script: |
           set -euo pipefail
           PODFILE="ios/Podfile"
           if [ -f "$PODFILE" ]; then
-            cat > patch_podfile.rb <<'RB'
-            path = "ios/Podfile"
-            s = File.read(path)
-            if s.include?("require Pod::Executable.execute_command('node', ['-p'")
-              s.gsub!(
-                /require Pod::Executable.execute_command\(\s*'node'.*?\)\s*\]/m,
-                "react_native_pods = Pod::Executable.execute_command(\n  'node',\n  [\n    '-p',\n    <<~'NODE',\n      require.resolve(\n        'react-native/scripts/react_native_pods.rb',\n        { paths: [process.argv[1]] },\n      )\n    NODE,\n    Pod::Config.instance.project_root.to_s\n  ]\n)\nrequire react_native_pods"
-              )
-              File.write(path, s)
-              puts "Patched Podfile resolver to use project_root"
-            else
-              puts "Podfile resolver already modernized or not matching; skip."
-            end
-            RB
-            ruby patch_podfile.rb
+            perl -0777 -i -pe "s/require Pod::Executable.execute_command\(\s*'node'.*?\)\s*\]/react_native_pods = Pod::Executable.execute_command(\n  'node',\n  [\n    '-p',\n    <<~'NODE',\n      require.resolve(\n        'react-native\/scripts\/react_native_pods.rb',\n        { paths: [process.argv[1]] },\n      )\n    NODE,\n    Pod::Config.instance.project_root.to_s\n  ]\n)\nrequire react_native_pods/s" \"$PODFILE\"
+            echo "Patched with Perl"
           else
             echo "Podfile not found at ios/Podfile"
           fi
