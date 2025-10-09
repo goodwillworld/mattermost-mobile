@@ -1,6 +1,6 @@
 workflows:
   ios-mattermost-release:
-    name: Mattermost iOS (App Groups + Push)
+    name: "Mattermost iOS (App Groups + Push)"
     instance_type: mac_mini_m2
     max_build_duration: 60
 
@@ -13,21 +13,21 @@ workflows:
         SHARE_BUNDLE_ID: "com.jboth.mine.MattermostShare"
         NOTI_BUNDLE_ID: "com.jboth.mine.NotificationService"
         APP_GROUP_ID: "group.com.jboth.mine"
-        TEAM_ID: "866Y22894T"   # 可留空 ""；填写则覆盖 DEVELOPMENT_TEAM
+        TEAM_ID: "866Y22894T"    # 可留空 ""；填写则覆盖 DEVELOPMENT_TEAM
         CI: "true"
       ios_signing:
-        distribution_type: app_store         # 若需 Ad Hoc，将此处与 export_options 一起改为 ad_hoc/ad-hoc
+        distribution_type: app_store
         bundle_identifier: com.jboth.mine
 
     scripts:
-      - name: Print tool versions
+      - name: "Print tool versions"
         script: |
           set -e
           xcodebuild -version
           ruby -v
           pod --version
 
-      - name: Use Node 20 LTS
+      - name: "Use Node 20 LTS"
         script: |
           set -euo pipefail
           export NVM_DIR="$HOME/.nvm"
@@ -48,12 +48,12 @@ workflows:
           npm -v || true
           yarn -v || true
 
-      - name: Install JS deps (root)
+      - name: "Install JS deps (root)"
         script: |
           set -e
           yarn install --frozen-lockfile || npm ci
 
-      - name: Patch Podfile resolver (no heredoc)
+      - name: "Patch Podfile resolver (no heredoc)"
         script: |
           set -euo pipefail
           PODFILE="ios/Podfile"
@@ -68,8 +68,7 @@ workflows:
             echo "Podfile not found at ios/Podfile"
           fi
 
-      # 防止仓库里的 setup_signing.sh 仍残留“提前匹配 profiles”的段落
-      - name: Trim setup_signing.sh to skip early profile matching
+      - name: "Trim setup_signing.sh to skip early profile matching"
         script: |
           set -euo pipefail
           test -f scripts/setup_signing.sh
@@ -79,43 +78,44 @@ workflows:
           echo '----- AFTER TRIM (tail -n 8) -----'
           tail -n 8 scripts/setup_signing.sh || true
 
-      - name: Run setup_signing.sh (from repo)
+      - name: "Run setup_signing.sh (from repo)"
         script: |
           set -euo pipefail
           bash scripts/setup_signing.sh
 
-      - name: Install pods
+      - name: "Install pods"
         script: |
           set -e
           cd ios
           pod repo update || true
           pod install --repo-update
 
-      - name: "Force replace pbxproj with known-good copy (.clean)"
+      # === 方案 B：用仓库内的 .clean 强制覆盖 ===
+      - name: "Materialize clean pbxproj (.clean)"
         script: |
           set -euo pipefail
-          if [ -f ios/Mattermost.xcodeproj/project.pbxproj.clean ]; then
-            cp ios/Mattermost.xcodeproj/project.pbxproj.clean ios/Mattermost.xcodeproj/project.pbxproj
+          SRC="ios/Mattermost.xcodeproj/project.pbxproj.clean"
+          DST="ios/Mattermost.xcodeproj/project.pbxproj"
+          if [ -f "$SRC" ]; then
+            cp "$SRC" "$DST"
             echo "Replaced pbxproj with known-good copy (.clean)."
           else
-            echo "ERROR: Missing ios/Mattermost.xcodeproj/project.pbxproj.clean"
+            echo "ERROR: Missing $SRC"
+            echo "请将干净可编译的 pbxproj 放到以上路径后重试。"
             exit 1
           fi
-          # 只读健康检查（project 级别）
+          # project 级只读健康检查（必须能列出 targets/schemes）
           xcodebuild -project ios/Mattermost.xcodeproj -list
 
-      # 关键：还原干净的 pbxproj，保证不带之前错误注入
-      - name: Restore clean pbxproj & sanity check
+      - name: "Restore clean pbxproj & sanity check (workspace)"
         script: |
           set -euo pipefail
-          git checkout -- ios/Mattermost.xcodeproj/project.pbxproj
           echo '==> pbxproj header (should start with // !$*UTF8*$!)'
           head -n 3 ios/Mattermost.xcodeproj/project.pbxproj || true
           echo '==> Workspace schemes'
           xcodebuild -workspace ios/Mattermost.xcworkspace -list
 
-      # 调试：看看谁改动了 pbxproj
-      - name: Probe pbxproj diff since checkout (debug)
+      - name: "Probe pbxproj diff since checkout (debug)"
         script: |
           set -e
           git status --porcelain
@@ -126,12 +126,15 @@ workflows:
             echo "pbxproj unchanged since checkout."
           fi
 
-      # 用 xcodeproj gem 自动修复/规范化 pbxproj（比正则安全）
-      - name: Heal pbxproj via xcodeproj gem
+      - name: "Heal pbxproj via xcodeproj gem"
         script: |
           set -euo pipefail
           if ! ruby -e "require 'xcodeproj'" 2>/dev/null; then
             gem install xcodeproj --no-document
+            export GEM_HOME="$HOME/.gem"
+            export PATH="$HOME/.gem/bin:$PATH"
+            echo 'export GEM_HOME="$HOME/.gem"' >> $CM_ENV
+            echo 'export PATH="$HOME/.gem/bin:$PATH"' >> $CM_ENV
           fi
           ruby - <<'RB'
             require 'xcodeproj'
@@ -142,22 +145,12 @@ workflows:
           echo '==> Workspace schemes after heal'
           xcodebuild -workspace ios/Mattermost.xcworkspace -list
 
-      # 兜底：若上一步失败，再从 HEAD 回滚一次并尝试修复
-      - name: Fallback restore pbxproj from HEAD and heal again
-        script: |
-          set -euo pipefail
-          git checkout -- ios/Mattermost.xcodeproj/project.pbxproj || true
-          ruby -e "require 'xcodeproj' ; p=Xcodeproj::Project.open('ios/Mattermost.xcodeproj') ; p.save"
-          echo '==> Workspace schemes after fallback heal'
-          xcodebuild -workspace ios/Mattermost.xcworkspace -list
-
-      # 安装 profiles 到 runner，并写入工程（生成我们稍后要覆盖的键位）
-      - name: Apply provisioning profiles to Xcode project
+      - name: "Apply provisioning profiles to Xcode project"
         script: |
           set -e
           xcode-project use-profiles --project ios/Mattermost.xcodeproj
 
-      - name: Inspect installed provisioning profiles (verbose)
+      - name: "Inspect installed provisioning profiles (verbose)"
         script: |
           set -euo pipefail
           PDIR="$HOME/Library/MobileDevice/Provisioning Profiles"
@@ -180,8 +173,7 @@ workflows:
             /usr/bin/plutil -extract Entitlements.aps-environment raw -o - /tmp/p.plist 2>/dev/null || echo "(none)"
           done
 
-      # 安全版：仅更新已存在的签名键值，不新增行，避免破坏 pbxproj
-      - name: Run apply_profiles.sh (safe update only)
+      - name: "Run apply_profiles.sh (safe update only)"
         script: |
           set -euo pipefail
           if [ ! -x scripts/apply_profiles.sh ]; then
@@ -190,16 +182,14 @@ workflows:
           fi
           bash scripts/apply_profiles.sh
 
-      # 运行后仅做只读健康检查（不要用 plutil 解析 ASCII pbxproj）
-      - name: Verify project after apply (read-only)
+      - name: "Verify project after apply (read-only)"
         script: |
           set -e
           echo '==> pbxproj header (should start with // !$*UTF8*$!)'
           head -n 3 ios/Mattermost.xcodeproj/project.pbxproj || true
           xcodebuild -workspace ios/Mattermost.xcworkspace -list
 
-      # 只读检查：Release + iphoneos 下的签名键是否齐全
-      - name: Dump signing keys per target (Release + iphoneos)
+      - name: "Dump signing keys per target (Release + iphoneos)"
         script: |
           set -e
           for T in Mattermost MattermostShare NotificationService; do
@@ -216,7 +206,7 @@ workflows:
               | sed -E "s/^/$T: /" || true
           done
 
-      - name: Generate export options (App Store)
+      - name: "Generate export options (App Store)"
         script: |
           set -e
           cat > export_options.plist <<'EOF'
@@ -232,19 +222,7 @@ workflows:
           </plist>
           EOF
 
-      - name: "List targets/schemes via project only"
-        script: |
-          set -e
-          xcodebuild -project ios/Mattermost.xcodeproj -list
-
-      - name: "Verify workspace sees project"
-        script: |
-          set -e
-          ls -l ios/Mattermost.xcodeproj || true
-          /usr/libexec/PlistBuddy -c "Print :workspace:FileRefs" ios/Mattermost.xcworkspace/contents.xcworkspacedata 2>/dev/null || cat ios/Mattermost.xcworkspace/contents.xcworkspacedata
-
-
-      - name: Build archive
+      - name: "Build archive"
         script: |
           set -e
           cd ios
@@ -258,7 +236,7 @@ workflows:
             COMPILER_INDEX_STORE_ENABLE=NO \
             archive | xcpretty && exit ${PIPESTATUS[0]}
 
-      - name: Export IPA
+      - name: "Export IPA"
         script: |
           set -e
           cd ios
