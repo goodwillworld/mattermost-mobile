@@ -98,13 +98,13 @@ mapping_bids = {
 
 for name, ent in mapping_ents.items():
   pat = r'(\/\* %s \*\/[\s\S]*?CODE_SIGN_ENTITLEMENTS\s*=)\s*[^;]+;' % re.escape(name)
-  s, n1 = subn(pat, r'\1 %s;' % ent, s)
+  s, n1 = subn(pat,  r'\g<1> %s;' % ent, s)
   pat2 = r'(CODE_SIGN_ENTITLEMENTS\s*=)\s*[^;]+;([\s\S]{0,400}PRODUCT_NAME\s*=\s*"?%s"?;)' % re.escape(name)
-  s, n2 = subn(pat2, r'\1 %s;\2' % ent, s)
+  s, n2 = subn(pat2, r'\g<1> %s;\2' % ent, s)
   pat3 = r'(\/\* %s \*\/[\s\S]*?PRODUCT_BUNDLE_IDENTIFIER\s*=)\s*[^;]+;' % re.escape(name)
-  s, n3 = subn(pat3, r'\1 %s;' % mapping_bids[name], s)
+  s, n3 = subn(pat3, r'\g<1> %s;' % mapping_bids[name], s)
   pat4 = r'(PRODUCT_BUNDLE_IDENTIFIER\s*=)\s*[^;]+;([\s\S]{0,400}PRODUCT_NAME\s*=\s*"?%s"?;)' % re.escape(name)
-  s, n4 = subn(pat4, r'\1 %s;\2' % mapping_bids[name], s)
+  s, n4 = subn(pat4, r'\g<1> %s;\2' % mapping_bids[name], s)
   print(f"{name}: entitlements patched {n1+n2} time(s), bundle id patched {n3+n4} time(s)")
 
 io.open(pbx, 'w', encoding='utf-8').write(s)
@@ -116,7 +116,7 @@ PY
 import sys, re, io
 pbx, team = sys.argv[1:3]
 s = io.open(pbx, 'r', encoding='utf-8').read()
-s = re.sub(r'(DEVELOPMENT_TEAM\s*=\s*)[^;]+;', r'\1%s;' % team, s)
+s = re.sub(r'(DEVELOPMENT_TEAM\s*=\s*)[^;]+;', fr'\g<1>{team};', s)
 io.open(pbx, 'w', encoding='utf-8').write(s)
 print("Set DEVELOPMENT_TEAM to", team)
 PY
