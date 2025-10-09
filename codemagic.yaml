@@ -3,6 +3,7 @@ workflows:
     name: Mattermost iOS (App Groups + Push, no Expo)
     instance_type: mac_mini_m2
     max_build_duration: 60
+
     environment:
       groups:
         - ios_match
@@ -13,154 +14,67 @@ workflows:
         NOTI_BUNDLE_ID: "com.jboth.mine.NotificationService"
         APP_GROUP_ID: "group.com.jboth.mine"
         CI: "true"
-      ios_signing:
-        distribution_type: app_store
-        bundle_identifier: com.jboth.mine
 
-    cache:
-      cache_paths:
-        - $HOME/Library/Caches/CocoaPods
-        - $CM_BUILD_DIR/node_modules
-        - $CM_BUILD_DIR/ios/Pods
+    code_signing:
+      app_store_connect:
+        api_key: $APP_STORE_CONNECT_PRIVATE_KEY
+        key_id: $APP_STORE_CONNECT_KEY_ID
+        issuer_id: $APP_STORE_CONNECT_ISSUER_ID
+      provisioning_profiles:
+        - bundle_identifier: "com.jboth.mine"
+          profile_type: "IOS_APP_ADHOC"
+          create: true
+        - bundle_identifier: "com.jboth.mine.MattermostShare"
+          profile_type: "IOS_APP_ADHOC"
+          create: true
+        - bundle_identifier: "com.jboth.mine.NotificationService"
+          profile_type: "IOS_APP_ADHOC"
+          create: true
 
     scripts:
-      - name: Use Node 20 LTS
+      - name: Xcode version
         script: |
-          set -euo pipefail
-          # [Omitted for brevity, same as previous]
-          node -v
-          if command -v corepack >/dev/null 2>&1; then
-            corepack enable
-            corepack prepare yarn@stable --activate || true
-          else
-            npm i -g yarn
-          fi
-          yarn -v || npm i -g yarn
+          xcodebuild -version
 
-      - name: Install JS deps
+      - name: Install tools
         script: |
-          set -euo pipefail
-          # [Omitted for brevity, same as previous]
-          cd "$CM_BUILD_DIR"
-          if [ -f "yarn.lock" ]; then
-            yarn install --frozen-lockfile
-          elif [ -f "package-lock.json" ]; then
-            npm ci
-          else
-            echo "No lock file found" >&2
-            exit 1
-          fi
+          brew update || true
+          brew install jq || true
 
-      - name: Patch Podfile if Expo is NOT present
+      - name: Set bundle identifiers & entitlements
         script: |
-          set -euo pipefail
-          # [Omitted for brevity, same as previous]
+          bash scripts/setup_signing.sh
 
-      - name: Strip entitlements to App Groups + Push only
+      - name: Install pods
         script: |
-          set -euo pipefail
-          APP_ENT="$CM_BUILD_DIR/ios/Mattermost/Mattermost.entitlements"
-          SHARE_ENT="$CM_BUILD_DIR/ios/MattermostShare/MattermostShare.entitlements"
-          NOTI_ENT="$CM_BUILD_DIR/ios/NotificationService/NotificationService.entitlements"
-          for f in "$APP_ENT" "$SHARE_ENT" "$NOTI_ENT"; do
-            [ -f "$f" ] || { echo "Missing entitlements: $f"; exit 1; }
-          done
-          APP_GROUP_ID="${APP_GROUP_ID:?APP_GROUP_ID missing}"
+          cd ios
+          pod install --repo-update
 
-          strip_keys() {
-            local f="$1"
-            /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.icloud-container-development-container-identifiers" "$f" || true
-            /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.icloud-container-identifiers" "$f" || true
-            /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.icloud-services" "$f" || true
-            /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.ubiquity-container-identifiers" "$f" || true
-            /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.ubiquity-kvstore-identifier" "$f" || true
-            /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.usernotifications.communication" "$f" || true
-          }
-
-          strip_keys "$APP_ENT"
-          /usr/libexec/PlistBuddy -c "Delete :com.apple.security.application-groups" "$APP_ENT" || true
-          /usr/libexec/PlistBuddy -c "Add :com.apple.security.application-groups array" "$APP_ENT"
-          /usr/libexec/PlistBuddy -c "Add :com.apple.security.application-groups:0 string $APP_GROUP_ID" "$APP_ENT"
-          /usr/libexec/PlistBuddy -c "Delete :aps-environment" "$APP_ENT" || true
-          /usr/libexec/PlistBuddy -c "Add :aps-environment string production" "$APP_ENT"
-
-          for f in "$SHARE_ENT" "$NOTI_ENT"; do
-            strip_keys "$f"
-            /usr/libexec/PlistBuddy -c "Delete :com.apple.security.application-groups" "$f" || true
-            /usr/libexec/PlistBuddy -c "Add :com.apple.security.application-groups array" "$f"
-            /usr/libexec/PlistBuddy -c "Add :com.apple.security.application-groups:0 string $APP_GROUP_ID" "$f"
-          done
-
-          echo "=== After entitlements patch ==="
-          /usr/libexec/PlistBuddy -c "Print" "$APP_ENT" || true
-          /usr/libexec/PlistBuddy -c "Print" "$SHARE_ENT" || true
-          /usr/libexec/PlistBuddy -c "Print" "$NOTI_ENT" || true
-
-      - name: Install CocoaPods & pod install
+      - name: Generate export options (ad-hoc)
         script: |
-          set -euo pipefail
-          cd "$CM_BUILD_DIR/ios"
-          gem uninstall cocoapods -a -x || true
-          gem install cocoapods -v 1.16.1
-          pod repo update
-          pod install
-
-      - name: Fetch signing files & import certs
-        script: |
-          set -euo pipefail
-          keychain initialize
-          test -n "${APP_STORE_CONNECT_ISSUER_ID:-}" || { echo "MISS ISSUER_ID"; exit 1; }
-          test -n "${APP_STORE_CONNECT_KEY_ID:-}" || { echo "MISS KEY_ID"; exit 1; }
-          test -n "${CERTIFICATE_PRIVATE_KEY:-}" || { echo "MISS PRIVATE_KEY"; exit 1; }
-          echo "ASC credentials present."
-
-          app-store-connect fetch-signing-files "$MAIN_BUNDLE_ID" --type IOS_APP_STORE --create
-          app-store-connect fetch-signing-files "$SHARE_BUNDLE_ID" --type IOS_APP_STORE --create
-          app-store-connect fetch-signing-files "$NOTI_BUNDLE_ID" --type IOS_APP_STORE --create
-
-          keychain add-certificates
-
-      - name: Show signing files
-        script: |
-          set -euo pipefail
-          echo "=== Keychain identities ==="
-          security find-identity -v -p codesigning /Users/builder/Library/codemagic-cli-tools/keychains/*.keychain-db || true
-          echo "=== Provisioning Profiles ===="
-          ls -la "/Users/builder/Library/MobileDevice/Provisioning Profiles"/*.mobileprovision 2>/dev/null || echo "No .mobileprovision"
-
-      - name: Apply profiles to Xcode targets
-        script: |
-          set -euo pipefail
-          cd "$CM_BUILD_DIR/ios"
-          xcode-project use-profiles \
-            --profile "$MAIN_BUNDLE_ID=jboth_chat" \
-            --profile "$SHARE_BUNDLE_ID=jboth_share" \
-            --profile "$NOTI_BUNDLE_ID=jboth_notification"
-
-      - name: Build IPA (App Store export)
-        script: |
-          set -euo pipefail
-          cd "$CM_BUILD_DIR/ios"
           cat > export_options.plist <<'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0"><dict>
-            <key>method</key><string>app-store</string>
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>ad-hoc</string>
             <key>signingStyle</key><string>automatic</string>
-            <key>provisioningProfiles</key><dict>
-              <key>com.jboth.mine</key><string>jboth_chat</string>
-              <key>com.jboth.mine.MattermostShare</key><string>jboth_share</string>
-              <key>com.jboth.mine.NotificationService</key><string>jboth_notification</string>
-            </dict>
-            <key>uploadSymbols</key><true/>
+            <key>destination</key><string>export</string>
             <key>compileBitcode</key><false/>
-          </dict></plist>
+            <key>iCloudContainerEnvironment</key><string>Production</string>
+          </dict>
+          </plist>
           EOF
 
-          xcode-project build-ipa \
-            --workspace Mattermost.xcworkspace \
-            --scheme "$APP_NAME" \
-            --export-options-plist export_options.plist
+      - name: Build archive
+        script: |
+          cd ios
+          xcodebuild -workspace Mattermost.xcworkspace             -scheme Mattermost             -configuration Release             -archivePath build/ios/xcarchive/Mattermost.xcarchive             CODE_SIGN_STYLE=Automatic             COMPILER_INDEX_STORE_ENABLE=NO             archive | xcpretty && exit ${PIPESTATUS[0]}
+
+      - name: Export IPA
+        script: |
+          cd ios
+          xcodebuild -exportArchive             -archivePath build/ios/xcarchive/Mattermost.xcarchive             -exportPath ipa             -exportOptionsPlist ../export_options.plist | xcpretty && exit ${PIPESTATUS[0]}
 
     artifacts:
       - ios/ipa/*.ipa
