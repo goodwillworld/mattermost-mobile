@@ -139,3 +139,99 @@ echo "  App bundle id:        ${MAIN_BUNDLE_ID}"
 echo "  Share bundle id:      ${SHARE_BUNDLE_ID}"
 echo "  Notification bundle:  ${NOTI_BUNDLE_ID}"
 echo "  App Group:            ${APP_GROUP_ID}"
+
+echo "==> Resolving provisioning profiles for targets"
+
+find_profile() {
+  local want_bundle="$1"      # 例如 com.jboth.mine.MattermostShare
+  local need_push="$2"        # "yes"/"no"（主 App yes，扩展 no）
+  local need_group="$3"       # "yes"（三者都要 group）
+  local best_name="" best_uuid=""
+
+  shopt -s nullglob
+  for f in "$HOME/Library/MobileDevice/Provisioning Profiles/"*.mobileprovision \
+           "$HOME/Library/MobileDevice/Provisioning Profiles/"*.provisionprofile; do
+    # 解包成 plist
+    PL=$(/usr/bin/security cms -D -i "$f" 2>/dev/null) || continue
+
+    # 取 Profile 名称与 UUID
+    NAME=$(echo "$PL" | /usr/bin/plutil -extract Name raw -o - - 2>/dev/null)
+    UUID=$(echo "$PL" | /usr/bin/plutil -extract UUID raw -o - - 2>/dev/null)
+
+    # 解析 application-identifier 与 entitlements
+    APPID=$(echo "$PL" | /usr/bin/plutil -extract Entitlements.application-identifier raw -o - - 2>/dev/null || true)
+    APS=$(echo "$PL" | /usr/bin/plutil -extract Entitlements.aps-environment raw -o - - 2>/dev/null || true)
+    # App Groups（有些 profile 没有这个 key，raw 会报错，忽略即可）
+    GROUPS=$(echo "$PL" | /usr/bin/plutil -p - 2>/dev/null | /usr/bin/grep -E '"com\.apple\.security\.application-groups"' -q && echo "yes" || echo "no")
+
+    # APPID 通常是 TEAMID.BUNDLEID；允许 TEAM_ID 未设置时仅匹配后缀
+    if [ -n "$TEAM_ID" ]; then
+      [[ "$APPID" == "$TEAM_ID.$want_bundle" ]] || continue
+    else
+      [[ "$APPID" == *".$want_bundle" ]] || continue
+    fi
+
+    # 校验能力
+    if [ "$need_push" = "yes" ] && [ -z "$APS" ]; then
+      continue
+    fi
+    if [ "$need_group" = "yes" ] && [ "$GROUPS" != "yes" ]; then
+      continue
+    fi
+
+    best_name="$NAME"
+    best_uuid="$UUID"
+    break
+  done
+
+  if [ -z "$best_uuid" ]; then
+    return 1
+  fi
+  echo "$best_name|$best_uuid"
+  return 0
+}
+
+apply_profile_to_pbx() {
+  local target="$1" bundle="$2" need_push="$3"
+  local r
+  if ! r=$(find_profile "$bundle" "$need_push" "yes"); then
+    echo "ERROR: No provisioning profile found for $bundle (push=$need_push, groups=yes)"
+    return 1
+  fi
+  local name="${r%%|*}"
+  local uuid="${r##*|}"
+  echo "Matched profile for $target ($bundle): $name ($uuid)"
+
+  # 写入 PROVISIONING_PROFILE_SPECIFIER / PROVISIONING_PROFILE 到 pbxproj
+  python3 - "$PBX" "$target" "$name" "$uuid" <<'PY'
+import sys, re, io
+pbx, target, spec, uuid = sys.argv[1:5]
+s = io.open(pbx, 'r', encoding='utf-8').read()
+
+def subn(pat, rep):
+  nonlocal_s = globals().setdefault('_s', None)
+  return re.subn(pat, rep, s, flags=re.M|re.S)
+
+# 为目标块内写入/替换两个键
+def patch_key_near_target(s, key, value, target):
+  # 1) 限定在目标注释块内
+  pat1 = re.compile(r'(\/\* %s \*\/[\s\S]*?%s\s*=)\s*[^;]+;' % (re.escape(target), re.escape(key)))
+  s, n1 = pat1.subn(r'\1 %s;' % value, s)
+  # 2) 或者在靠近该 target 的 buildSettings 中（通过 PRODUCT_NAME 匹配）
+  pat2 = re.compile(r'(%s\s*=)\s*[^;]+;([\s\S]{0,400}PRODUCT_NAME\s*=\s*"?%s"?;)' % (re.escape(key), re.escape(target)))
+  s, n2 = pat2.subn(r'\1 %s;\2' % value, s)
+  return s, (n1+n2)
+
+# 写 specifier（用名称）
+s, nA = patch_key_near_target(s, 'PROVISIONING_PROFILE_SPECIFIER', spec, target)
+# 也写 UUID（兼容老字段）
+s, nB = patch_key_near_target(s, 'PROVISIONING_PROFILE', uuid, target)
+io.open(pbx, 'w', encoding='utf-8').write(s)
+print(f"Patched {target}: SPECIFIER {nA}x, UUID {nB}x")
+PY
+}
+
+PBX="${IOS_DIR}/Mattermost.xcodeproj/project.pbxproj"
+apply_profile_to_pbx "Mattermost"          "$MAIN_BUNDLE_ID"          "yes"
+apply_profile_to_pbx "MattermostShare"     "$SHARE_BUNDLE_ID"         "no"
+apply_profile_to_pbx "NotificationService" "$NOTI_BUNDLE_ID"          "no"
