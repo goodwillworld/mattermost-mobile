@@ -203,56 +203,75 @@ workflows:
           test -f "$P"
 
           ruby - <<'RUBY'
-            path = 'ios/Podfile'
-            s = File.read(path)
+          path = 'ios/Podfile'
+          s = File.read(path)
 
-            # 确保 platform 行 & 你之前的 SWIFT/Deployment/Concurrency 注入已存在（略）
-            # 这里只关注 post_install 里的 C++ 设置增强：
-
-            # 注入函数：在 post_install 块中，给每个 target 的每个配置写 C++ 设置
-            def inject_cxx_settings(block)
-              lines = []
-              lines << "  installer.pods_project.targets.each do |t|"
-              lines << "    t.build_configurations.each do |cfg|"
-              lines << "      bs = cfg.build_settings"
-              lines << "      bs['CLANG_CXX_LANGUAGE_STANDARD'] = 'gnu++17'"
-              lines << "      bs['CLANG_CXX_LIBRARY'] = 'libc++'"
-              lines << "      # 追加 flags（若已存在则保持）"
-              lines << "      existing = Array(bs['OTHER_CPLUSPLUSFLAGS'])"
-              lines << "      need = ['-std=gnu++17']"
-              lines << "      bs['OTHER_CPLUSPLUSFLAGS'] = (existing + need).uniq"
-              lines << "    end"
-              lines << "  end"
-              lines << ""
-              # 对特定 Pod 进行额外照顾：secure-pdf-viewer
-              lines << "  target = installer.pods_project.targets.find { |tt| tt.name == 'secure-pdf-viewer' }"
-              lines << "  if target"
-              lines << "    target.build_configurations.each do |cfg|"
-              lines << "      bs = cfg.build_settings"
-              lines << "      bs['GCC_ENABLE_CPP_EXCEPTIONS'] = 'YES'"
-              lines << "      bs['GCC_ENABLE_CPP_RTTI'] = 'YES'"
-              lines << "      # 防止某些头触发严格并发/可用性：保持最小并发检查（你之前已设 Swift minimal，这里是 C++ 无关，但留作注释）"
-              lines << "    end"
-              lines << "  end"
-              block.sub(/end\s*\z/, lines.join(\"\\n\") + \"\\nend\") # 在 post_install-end 前插入
-            end
-
-            if s =~ /post_install do \|installer\|/m
-              s = s.gsub(/post_install do \|installer\|.*?end/m) do |blk|
-                blk.include?("CLANG_CXX_LANGUAGE_STANDARD") ? blk : inject_cxx_settings(blk)
+          # 生成一个完整的 post_install 块（当原文件没有时使用）
+          def cxx_post_install_block
+            <<~'BLOCK'
+            post_install do |installer|
+              installer.pods_project.targets.each do |t|
+                t.build_configurations.each do |cfg|
+                  bs = cfg.build_settings
+                  bs['CLANG_CXX_LANGUAGE_STANDARD'] = 'gnu++17'
+                  bs['CLANG_CXX_LIBRARY'] = 'libc++'
+                  existing = Array(bs['OTHER_CPLUSPLUSFLAGS'])
+                  need = ['-std=gnu++17']
+                  bs['OTHER_CPLUSPLUSFLAGS'] = (existing + need).uniq
+                end
               end
-            else
-              s << <<~'HOOK'
 
-              post_install do |installer|
-                #{inject_cxx_settings("post_install do |installer|\nend")}
+              target = installer.pods_project.targets.find { |tt| tt.name == 'secure-pdf-viewer' }
+              if target
+                target.build_configurations.each do |cfg|
+                  bs = cfg.build_settings
+                  bs['GCC_ENABLE_CPP_EXCEPTIONS'] = 'YES'
+                  bs['GCC_ENABLE_CPP_RTTI'] = 'YES'
+                end
               end
-              HOOK
             end
+            BLOCK
+          end
 
-            File.write(path, s)
-            puts "Podfile post_install enhanced with C++17 settings."
+          if s =~ /post_install do \|installer\|.*?end/m
+            # 已有 post_install：若未包含 C++ 设置，则在 end 之前插入一段（幂等）
+            s = s.gsub(/post_install do \|installer\|.*?end/m) do |blk|
+              if blk.include?("CLANG_CXX_LANGUAGE_STANDARD")
+                blk
+              else
+                blk.sub(/end\s*\z/, <<~'INJECT'.chomp + "\nend")
+                  
+                  installer.pods_project.targets.each do |t|
+                    t.build_configurations.each do |cfg|
+                      bs = cfg.build_settings
+                      bs['CLANG_CXX_LANGUAGE_STANDARD'] = 'gnu++17'
+                      bs['CLANG_CXX_LIBRARY'] = 'libc++'
+                      existing = Array(bs['OTHER_CPLUSPLUSFLAGS'])
+                      need = ['-std=gnu++17']
+                      bs['OTHER_CPLUSPLUSFLAGS'] = (existing + need).uniq
+                    end
+                  end
+
+                  target = installer.pods_project.targets.find { |tt| tt.name == 'secure-pdf-viewer' }
+                  if target
+                    target.build_configurations.each do |cfg|
+                      bs = cfg.build_settings
+                      bs['GCC_ENABLE_CPP_EXCEPTIONS'] = 'YES'
+                      bs['GCC_ENABLE_CPP_RTTI'] = 'YES'
+                    end
+                  end
+                INJECT
+              end
+            end
+          else
+            # 没有 post_install：追加一个完整块
+            s << "\n" << cxx_post_install_block << "\n"
+          end
+
+          File.write(path, s)
+          puts "Podfile post_install enhanced with C++17 settings."
           RUBY
+
 
 
       - name: "Install pods"
