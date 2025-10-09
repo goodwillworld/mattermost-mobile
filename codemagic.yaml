@@ -28,18 +28,23 @@ workflows:
 
       - name: Use Node 20 LTS (via nvm，无 nvm 时自动回退)
         script: |
-          set -e
+          set -euo pipefail
           export NVM_DIR="$HOME/.nvm"
           if [ -s "$NVM_DIR/nvm.sh" ]; then
             . "$NVM_DIR/nvm.sh"
             nvm install 20
             nvm use 20
+            # 持久化当前 Node 到后续步骤
+            echo 'export NVM_DIR="$HOME/.nvm"' >> $CM_ENV
+            echo '. "$NVM_DIR/nvm.sh" && nvm use 20 >/dev/null' >> $CM_ENV
           else
             echo "nvm not found, fallback to Homebrew node@20"
             brew update || true
             brew install node@20 || true
-            echo 'export PATH="/opt/homebrew/opt/node@20/bin:$PATH"' >> $BASH_ENV
-            source $BASH_ENV
+            # 立刻在当前 shell 生效
+            export PATH="/opt/homebrew/opt/node@20/bin:$PATH"
+            # 持久化到后续步骤（用 CM_ENV，而不是 BASH_ENV）
+            echo 'export PATH="/opt/homebrew/opt/node@20/bin:$PATH"' >> $CM_ENV
           fi
           node -v
           npm -v || true
