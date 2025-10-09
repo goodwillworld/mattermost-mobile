@@ -1,6 +1,6 @@
 workflows:
   ios-mattermost-release:
-    name: Mattermost iOS (App Groups + Push, no Expo)
+    name: Mattermost iOS (App Groups + Push)
     instance_type: mac_mini_m2
     max_build_duration: 60
 
@@ -13,22 +13,22 @@ workflows:
         SHARE_BUNDLE_ID: "com.jboth.mine.MattermostShare"
         NOTI_BUNDLE_ID: "com.jboth.mine.NotificationService"
         APP_GROUP_ID: "group.com.jboth.mine"
-        TEAM_ID: "866Y22894T"   # 可选：填你的 10 位 Team ID，用于强制写入 DEVELOPMENT_TEAM
+        TEAM_ID: "866Y22894T"    # 如不想强制写入，可留空 ""
         CI: "true"
       ios_signing:
-        # TestFlight 用 app_store；若需 Ad Hoc，将此处与下方 export_options 的 method 同步改为 ad_hoc / ad-hoc
+        # TestFlight 用 app_store；若需 Ad Hoc，请把这里与下方导出 method 一起改为 ad_hoc / ad-hoc
         distribution_type: app_store
         bundle_identifier: com.jboth.mine
 
     scripts:
-      - name: Print Xcode / Ruby / CocoaPods versions
+      - name: Print tool versions
         script: |
           set -e
           xcodebuild -version
           ruby -v
           pod --version
 
-      - name: Use Node 20 LTS (via nvm，无 nvm 时自动回退)
+      - name: Use Node 20 LTS
         script: |
           set -euo pipefail
           export NVM_DIR="$HOME/.nvm"
@@ -36,7 +36,6 @@ workflows:
             . "$NVM_DIR/nvm.sh"
             nvm install 20
             nvm use 20
-            # 持久化到后续步骤
             echo 'export NVM_DIR="$HOME/.nvm"' >> $CM_ENV
             echo '. "$NVM_DIR/nvm.sh" && nvm use 20 >/dev/null' >> $CM_ENV
           else
@@ -50,12 +49,12 @@ workflows:
           npm -v || true
           yarn -v || true
 
-      - name: Install JS deps (project root)
+      - name: Install JS deps (root)
         script: |
           set -e
           yarn install --frozen-lockfile || npm ci
 
-      - name: Patch Podfile resolver (point to project root, no heredoc)
+      - name: Patch Podfile resolver (no heredoc)
         script: |
           set -euo pipefail
           PODFILE="ios/Podfile"
@@ -73,23 +72,18 @@ workflows:
       - name: Trim setup_signing.sh to skip early profile matching
         script: |
           set -euo pipefail
-          if [ ! -f scripts/setup_signing.sh ]; then
-            echo "scripts/setup_signing.sh not found"
-            exit 1
-          fi
-          # 删除从标记行开始到文件结尾（即剥离“==> Resolving provisioning profiles for targets”及其后续代码）
-          awk 'BEGIN{p=1} /^==> Resolving provisioning profiles for targets/{p=0} { if(p) print }' \
+          test -f scripts/setup_signing.sh
+          # 从出现“Resolving provisioning profiles”那行开始到文件末尾全部删除
+          awk '/Resolving provisioning profiles/ {exit} {print}' \
             scripts/setup_signing.sh > scripts/setup_signing_trimmed.sh
           mv scripts/setup_signing_trimmed.sh scripts/setup_signing.sh
           chmod +x scripts/setup_signing.sh
+          echo "----- AFTER TRIM (tail -n 10) -----"
+          tail -n 10 scripts/setup_signing.sh || true
 
       - name: Run setup_signing.sh (from repo)
         script: |
           set -euo pipefail
-          if [ ! -x scripts/setup_signing.sh ]; then
-            echo "scripts/setup_signing.sh not found or not executable"
-            exit 1
-          fi
           bash scripts/setup_signing.sh
 
       - name: Install pods
@@ -111,8 +105,7 @@ workflows:
           echo "==> Profiles in runner:"
           ls -l "$HOME/Library/MobileDevice/Provisioning Profiles" || true
 
-
-      - name: Run apply_profiles.sh
+      - name: Run apply_profiles.sh (from repo)
         script: |
           set -euo pipefail
           if [ ! -x scripts/apply_profiles.sh ]; then
@@ -120,7 +113,6 @@ workflows:
             exit 1
           fi
           bash scripts/apply_profiles.sh
-
 
       - name: Show build signing for each target
         script: |
@@ -135,7 +127,7 @@ workflows:
       - name: Generate export options (App Store)
         script: |
           set -e
-          # 若需 Ad Hoc，请把 method 改为 ad-hoc，并与上方 distribution_type 同步
+          # 若需 Ad Hoc：把 method 改成 ad-hoc，并与 environment.ios_signing.distribution_type 同步为 ad_hoc
           cat > export_options.plist <<'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
