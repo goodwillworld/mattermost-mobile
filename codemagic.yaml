@@ -68,7 +68,7 @@ workflows:
             echo "Podfile not found at ios/Podfile"
           fi
 
-      # 防止仓库里的 setup_signing.sh 里仍残留“早期匹配 profiles”的段落
+      # 防止仓库里的 setup_signing.sh 仍残留“提前匹配 profiles”的段落
       - name: Trim setup_signing.sh to skip early profile matching
         script: |
           set -euo pipefail
@@ -96,7 +96,9 @@ workflows:
         script: |
           set -euo pipefail
           git checkout -- ios/Mattermost.xcodeproj/project.pbxproj
-          /usr/bin/plutil -lint ios/Mattermost.xcodeproj/project.pbxproj
+          echo "==> pbxproj header (should start with // !$*UTF8*$!)"
+          head -n 3 ios/Mattermost.xcodeproj/project.pbxproj || true
+          echo "==> Workspace schemes"
           xcodebuild -workspace ios/Mattermost.xcworkspace -list
 
       # 安装 profiles 到 runner，并写入工程（生成我们稍后要覆盖的键位）
@@ -137,8 +139,14 @@ workflows:
             exit 1
           fi
           bash scripts/apply_profiles.sh
-          # 运行后立即校验 pbxproj 语法
-          /usr/bin/plutil -lint ios/Mattermost.xcodeproj/project.pbxproj
+
+      # 运行后仅做只读健康检查（不要用 plutil 解析 ASCII pbxproj）
+      - name: Verify project after apply (read-only)
+        script: |
+          set -e
+          echo "==> pbxproj header (should start with // !$*UTF8*$!)"
+          head -n 3 ios/Mattermost.xcodeproj/project.pbxproj || true
+          xcodebuild -workspace ios/Mattermost.xcworkspace -list
 
       # 只读检查：Release + iphoneos 下的签名键是否齐全
       - name: Dump signing keys per target (Release + iphoneos)
