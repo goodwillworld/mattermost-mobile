@@ -13,10 +13,10 @@ workflows:
         SHARE_BUNDLE_ID: "com.jboth.mine.MattermostShare"
         NOTI_BUNDLE_ID: "com.jboth.mine.NotificationService"
         APP_GROUP_ID: "group.com.jboth.mine"
-        TEAM_ID: "866Y22894T"   # 可留空 ""；填写则强制覆盖 DEVELOPMENT_TEAM
+        TEAM_ID: "866Y22894T"
         CI: "true"
       ios_signing:
-        distribution_type: app_store         # 若需 Ad Hoc，将此处与下方 export_options 一起改为 ad_hoc/ad-hoc
+        distribution_type: app_store
         bundle_identifier: com.jboth.mine
 
     scripts:
@@ -68,7 +68,6 @@ workflows:
             echo "Podfile not found at ios/Podfile"
           fi
 
-      # 防止仓库里的 setup_signing.sh 仍残留“提前匹配 profiles”的段落
       - name: Trim setup_signing.sh to skip early profile matching
         script: |
           set -euo pipefail
@@ -76,7 +75,7 @@ workflows:
           awk '/Resolving provisioning profiles/ {exit} {print}' scripts/setup_signing.sh > scripts/setup_signing_trimmed.sh
           mv scripts/setup_signing_trimmed.sh scripts/setup_signing.sh
           chmod +x scripts/setup_signing.sh
-          echo "----- AFTER TRIM (tail -n 8) -----"
+          echo '----- AFTER TRIM (tail -n 8) -----'
           tail -n 8 scripts/setup_signing.sh || true
 
       - name: Run setup_signing.sh (from repo)
@@ -91,17 +90,15 @@ workflows:
           pod repo update || true
           pod install --repo-update
 
-      # 关键：还原干净的 pbxproj，保证不带之前错误注入
       - name: Restore clean pbxproj & sanity check
         script: |
           set -euo pipefail
           git checkout -- ios/Mattermost.xcodeproj/project.pbxproj
-          echo "==> pbxproj header (should start with // !$*UTF8*$!)"
+          echo '==> pbxproj header (should start with // !$*UTF8*$!)'
           head -n 3 ios/Mattermost.xcodeproj/project.pbxproj || true
-          echo "==> Workspace schemes"
+          echo '==> Workspace schemes'
           xcodebuild -workspace ios/Mattermost.xcworkspace -list
 
-      # 安装 profiles 到 runner，并写入工程（生成我们稍后要覆盖的键位）
       - name: Apply provisioning profiles to Xcode project
         script: |
           set -e
@@ -130,7 +127,6 @@ workflows:
             /usr/bin/plutil -extract Entitlements.aps-environment raw -o - /tmp/p.plist 2>/dev/null || echo "(none)"
           done
 
-      # 安全版：仅更新已存在的签名键值，不新增行，避免破坏 pbxproj
       - name: Run apply_profiles.sh (safe update only)
         script: |
           set -euo pipefail
@@ -140,15 +136,13 @@ workflows:
           fi
           bash scripts/apply_profiles.sh
 
-      # 运行后仅做只读健康检查（不要用 plutil 解析 ASCII pbxproj）
       - name: Verify project after apply (read-only)
         script: |
           set -e
-          echo "==> pbxproj header (should start with // !$*UTF8*$!)"
+          echo '==> pbxproj header (should start with // !$*UTF8*$!)'
           head -n 3 ios/Mattermost.xcodeproj/project.pbxproj || true
           xcodebuild -workspace ios/Mattermost.xcworkspace -list
 
-      # 只读检查：Release + iphoneos 下的签名键是否齐全
       - name: Dump signing keys per target (Release + iphoneos)
         script: |
           set -e
