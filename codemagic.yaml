@@ -100,6 +100,40 @@ workflows:
           echo "==> xcodebuild -project -list (must succeed)"
           xcodebuild -project ios/Mattermost.xcodeproj -list
 
+      - name: "Project: set iOS 16 + Swift 5.9 + strict concurrency=minimal (Release)"
+        script: |
+          set -euo pipefail
+          if ! ruby -e "require 'xcodeproj'" 2>/dev/null; then
+            gem install xcodeproj --no-document
+            export GEM_HOME="$HOME/.gem"
+            export PATH="$HOME/.gem/bin:$PATH"
+            echo 'export GEM_HOME="$HOME/.gem"' >> $CM_ENV
+            echo 'export PATH="$HOME/.gem/bin:$PATH"' >> $CM_ENV
+          fi
+
+          ruby - <<'RB'
+            require 'xcodeproj'
+            proj = Xcodeproj::Project.open('ios/Mattermost.xcodeproj')
+            targets = ['Mattermost', 'MattermostShare', 'NotificationService']
+            proj.targets.each do |t|
+              next unless targets.include?(t.name)
+              t.build_configurations.each do |cfg|
+                next unless cfg.name == 'Release'
+                bs = cfg.build_settings
+                bs['SWIFT_VERSION'] = '5.9'
+                if bs['IPHONEOS_DEPLOYMENT_TARGET'].to_s < '16.0'
+                  bs['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'
+                end
+                bs['SWIFT_STRICT_CONCURRENCY'] = 'minimal'
+              end
+            end
+            proj.save
+            puts "Project Release configs updated."
+          RB
+
+          xcodebuild -project ios/Mattermost.xcodeproj -list
+
+
       - name: "Bump deployment target in project to iOS 16.0 (Release only)"
         script: |
           set -euo pipefail
@@ -133,7 +167,7 @@ workflows:
           # 确认 project 仍可读
           xcodebuild -project ios/Mattermost.xcodeproj -list
 
-      - name: "Patch Podfile: iOS 16 + Swift 5.9 (no Alamofire pin)"
+      - name: "Patch Podfile: iOS 16 + Swift 5.9 + strict concurrency=minimal + pin Alamofire"
         script: |
           set -euo pipefail
           P=ios/Podfile
@@ -143,45 +177,54 @@ workflows:
             path = 'ios/Podfile'
             s = File.read(path)
 
-            # 1) platform :ios 提升到 16.0（若已有更高版本则不降）
+            # 1) platform :ios -> 16.0
             if s =~ /^platform :ios/
               s = s.gsub(/^platform :ios, .*/, 'platform :ios, "16.0"')
             else
               s = %(platform :ios, "16.0"\n) + s
             end
 
-            # 2) post_install 钩子里统一 Pods 的 SWIFT_VERSION 和 IPHONEOS_DEPLOYMENT_TARGET
+            # 2) 若主 app target 存在且未显式声明 Alamofire，则插入一行 pin 到 5.9
+            #    简单策略：在第一处 `target 'Mattermost' do` 之后插入
+            unless s.include?("pod 'Alamofire'")
+              s = s.sub(/(target\s+['"]Mattermost['"]\s+do\s*\n)/, "\\1  pod 'Alamofire', '~> 5.9'\n")
+            end
+
+            # 3) post_install 统一 Pods 的 Swift/Deployment/Strict Concurrency
             injector = <<~'HOOK'
             post_install do |installer|
               installer.pods_project.targets.each do |t|
                 t.build_configurations.each do |cfg|
                   cfg.build_settings['SWIFT_VERSION'] = '5.9'
+                  # 老项目可能有更低的 iOS 目标，这里强提到 16
                   if cfg.build_settings['IPHONEOS_DEPLOYMENT_TARGET'].to_s < '16.0'
                     cfg.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'
                   end
+                  # Swift 6 默认 complete，这里降到 minimal 以兼容三方库
+                  cfg.build_settings['SWIFT_STRICT_CONCURRENCY'] = 'minimal'
                 end
               end
             end
             HOOK
 
             if s =~ /post_install do \|installer\|/
-              # 已有 post_install：若缺关键设置则注入（幂等）
               s = s.gsub(/post_install do \|installer\|.*?end/m) do |blk|
-                need_swift = (blk !~ /SWIFT_VERSION/)
-                need_deploy = (blk !~ /IPHONEOS_DEPLOYMENT_TARGET/)
-                if need_swift || need_deploy
-                  blk.sub(/end\s*\z/, "  installer.pods_project.targets.each do |t|\n    t.build_configurations.each do |cfg|\n      cfg.build_settings['SWIFT_VERSION'] = '5.9'\n      if cfg.build_settings['IPHONEOS_DEPLOYMENT_TARGET'].to_s < '16.0'\n        cfg.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'\n      end\n    end\n  end\nend")
+                needs = []
+                needs << "SWIFT_VERSION" unless blk.include?("SWIFT_VERSION")
+                needs << "IPHONEOS_DEPLOYMENT_TARGET" unless blk.include?("IPHONEOS_DEPLOYMENT_TARGET")
+                needs << "SWIFT_STRICT_CONCURRENCY" unless blk.include?("SWIFT_STRICT_CONCURRENCY")
+                if needs.any?
+                  blk.sub(/end\s*\z/, "  installer.pods_project.targets.each do |t|\n    t.build_configurations.each do |cfg|\n      cfg.build_settings['SWIFT_VERSION'] = '5.9'\n      if cfg.build_settings['IPHONEOS_DEPLOYMENT_TARGET'].to_s < '16.0'\n        cfg.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'\n      end\n      cfg.build_settings['SWIFT_STRICT_CONCURRENCY'] = 'minimal'\n    end\n  end\nend")
                 else
                   blk
                 end
               end
             else
-              # 无 post_install：直接追加
               s << "\n" + injector + "\n"
             end
 
             File.write(path, s)
-            puts "Podfile patched for iOS 16 & Swift 5.9."
+            puts "Podfile patched."
           RUBY
 
 
