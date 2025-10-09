@@ -70,6 +70,19 @@ workflows:
             echo "Podfile not found at ios/Podfile"
           fi
 
+      - name: Trim setup_signing.sh to skip early profile matching
+        script: |
+          set -euo pipefail
+          if [ ! -f scripts/setup_signing.sh ]; then
+            echo "scripts/setup_signing.sh not found"
+            exit 1
+          fi
+          # 删除从标记行开始到文件结尾（即剥离“==> Resolving provisioning profiles for targets”及其后续代码）
+          awk 'BEGIN{p=1} /^==> Resolving provisioning profiles for targets/{p=0} { if(p) print }' \
+            scripts/setup_signing.sh > scripts/setup_signing_trimmed.sh
+          mv scripts/setup_signing_trimmed.sh scripts/setup_signing.sh
+          chmod +x scripts/setup_signing.sh
+
       - name: Run setup_signing.sh (from repo)
         script: |
           set -euo pipefail
@@ -91,6 +104,13 @@ workflows:
           set -e
           # 仅作用于主工程，避免 node_modules 的子工程被误改
           xcode-project use-profiles --project ios/Mattermost.xcodeproj
+
+      - name: List installed provisioning profiles
+        script: |
+          set -e
+          echo "==> Profiles in runner:"
+          ls -l "$HOME/Library/MobileDevice/Provisioning Profiles" || true
+
 
       - name: Run apply_profiles.sh
         script: |
