@@ -69,37 +69,6 @@ workflows:
           fi
 
       # ① MUST：物化干净 pbxproj + 校验（先于一切 Xcode 操作）
-      - name: "MUST: materialize & verify clean pbxproj (.clean)"
-        script: |
-          set -euo pipefail
-          SRC="ios/Mattermost.xcodeproj/project.pbxproj.clean"
-          DST="ios/Mattermost.xcodeproj/project.pbxproj"
-
-          echo "==> assert .clean exists"
-          ls -l "$SRC"
-
-          echo "==> copy .clean -> pbxproj"
-          cp "$SRC" "$DST"
-
-          echo "==> compare checksums to ensure overwrite really happened"
-          md5_src=$(md5 -q "$SRC")
-          md5_dst=$(md5 -q "$DST")
-          echo "SRC MD5: $md5_src"
-          echo "DST MD5: $md5_dst"
-          if [ "$md5_src" != "$md5_dst" ]; then
-            echo "ERROR: pbxproj not overwritten correctly"; exit 1
-          fi
-
-          # 备份好文件，便于后续回滚
-          cp "$DST" ios/Mattermost.xcodeproj/project.pbxproj.good
-
-          echo "==> basic sanity (header + around suspicious line)"
-          head -n 3 "$DST" || true
-          sed -n '2088,2102p' "$DST" || true
-
-          echo "==> xcodebuild -project -list (must succeed)"
-          xcodebuild -project ios/Mattermost.xcodeproj -list
-
       - name: "Project: set iOS 16 + Swift 5.9 + strict concurrency=minimal (Release)"
         script: |
           set -euo pipefail
@@ -165,6 +134,66 @@ workflows:
           RB
 
           # 确认 project 仍可读
+          xcodebuild -project ios/Mattermost.xcodeproj -list
+
+
+      - name: "MUST: materialize & verify clean pbxproj (.clean)"
+        script: |
+          set -euo pipefail
+          SRC="ios/Mattermost.xcodeproj/project.pbxproj.clean"
+          DST="ios/Mattermost.xcodeproj/project.pbxproj"
+          ls -l "$SRC"
+          cp "$SRC" "$DST"
+          md5_src=$(md5 -q "$SRC"); md5_dst=$(md5 -q "$DST")
+          echo "SRC MD5: $md5_src"; echo "DST MD5: $md5_dst"
+          [ "$md5_src" = "$md5_dst" ] || { echo "Overwrite failed"; exit 1; }
+          cp "$DST" ios/Mattermost.xcodeproj/project.pbxproj.good
+          xcodebuild -project ios/Mattermost.xcodeproj -list
+
+      - name: "Project: unify Swift=5.9 + iOS 16.0 + concurrency=minimal (ALL configs)"
+        script: |
+          set -euo pipefail
+          if ! ruby -e "require 'xcodeproj'" 2>/dev/null; then
+            gem install xcodeproj --no-document
+            export GEM_HOME="$HOME/.gem"
+            export PATH="$HOME/.gem/bin:$PATH"
+            echo 'export GEM_HOME="$HOME/.gem"' >> $CM_ENV
+            echo 'export PATH="$HOME/.gem/bin:$PATH"' >> $CM_ENV
+          fi
+
+          ruby - <<'RB'
+            require 'xcodeproj'
+            proj = Xcodeproj::Project.open('ios/Mattermost.xcodeproj')
+
+            # 覆盖工程级别（可选，保险）
+            proj.build_configurations.each do |cfg|
+              bs = cfg.build_settings
+              bs['SWIFT_VERSION'] = '5.9'
+              if bs['IPHONEOS_DEPLOYMENT_TARGET'].to_s < '16.0'
+                bs['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'
+              end
+              bs['SWIFT_STRICT_CONCURRENCY'] = 'minimal'
+            end
+
+            # 覆盖三个 targets 的“所有配置”（Debug/Release都要统一）
+            targets = ['Mattermost','MattermostShare','NotificationService']
+            proj.targets.each do |t|
+              next unless targets.include?(t.name)
+              t.build_configurations.each do |cfg|
+                bs = cfg.build_settings
+                bs['SWIFT_VERSION'] = '5.9'
+                if bs['IPHONEOS_DEPLOYMENT_TARGET'].to_s < '16.0'
+                  bs['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'
+                end
+                bs['SWIFT_STRICT_CONCURRENCY'] = 'minimal'
+              end
+            end
+
+            proj.save
+            puts "Unified Swift/iOS/concurrency across ALL build configurations."
+          RB
+
+          # 再次快速健康检查
           xcodebuild -project ios/Mattermost.xcodeproj -list
 
       - name: "Patch Podfile: iOS 16 + Swift 5.9 + strict concurrency=minimal + pin Alamofire"
