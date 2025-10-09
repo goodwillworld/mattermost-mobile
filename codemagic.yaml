@@ -3,27 +3,26 @@ workflows:
     name: iOS Mattermost (whitelabel) — up to pods
     instance_type: mac_mini_m2
     max_build_duration: 120
+
+    # ✅ cache 放在 workflow 级别，而不是 environment 里
+    cache:
+      cache_paths:
+        - $HOME/Library/Caches/CocoaPods
+        - ios/Pods
+        - $CM_BUILD_DIR/node_modules
+        - $HOME/Library/Caches/npm/_cacache
+
     environment:
       vars:
-        # 你的白标 App 基本变量（后续签名/打包会用到；本阶段不强依赖）
         APP_BUNDLE_ID: com.jboth.mine
         SHARE_BUNDLE_ID: com.jboth.mine.MattermostShare
         NOTIF_BUNDLE_ID: com.jboth.mine.NotificationService
         APP_GROUP_ID: group.com.jboth.mine
         APP_IOS_DEPLOYMENT_TARGET: "15.1"
-
       xcode: 16.4
       cocoapods: 1.15.2
       node: 20.11.1
       npm: 10.8.2
-
-      # 缓存能显著加快 pod & npm
-      cache:
-        cache_paths:
-          - $HOME/Library/Caches/CocoaPods
-          - ios/Pods
-          - $CM_BUILD_DIR/node_modules
-          - $HOME/Library/Caches/npm/_cacache
 
     triggering:
       events:
@@ -34,7 +33,6 @@ workflows:
           source: true
 
     scripts:
-      # ---- 0) 基础环境可见性 ----
       - name: Show toolchain versions
         script: |
           set -euo pipefail
@@ -45,7 +43,6 @@ workflows:
           node -v
           npm -v
 
-      # ---- 1) Node 源与 npm 行为：锁定官方源，严格但避免 ci EUSAGE ----
       - name: NPM registry & config
         script: |
           set -euo pipefail
@@ -55,11 +52,6 @@ workflows:
           npm config set audit false
           npm config set progress false
 
-      # ---- 2) 修正 package.json：把问题依赖钉到“存在且兼容”的版本 ----
-      # 说明：
-      #  - 我们先改 package.json（overrides + 同步到各依赖段）
-      #  - 再“只生成/刷新 lock”以保证 lock 与 package.json 完全一致
-      #  - 最后执行 npm install（不使用 npm ci，从根上杜绝 EUSAGE）
       - name: Fix JS deps to known-good set & write lock
         script: |
           set -euo pipefail
@@ -68,18 +60,15 @@ workflows:
           const path = 'package.json';
           const pkg = JSON.parse(fs.readFileSync(path, 'utf8'));
 
-          // 一组“已确认存在”的版本，避免 ETARGET / notarget
           const pins = {
-            "eslint": "8.57.1",            // 兼容 @typescript-eslint@7
-            "yaml": "2.4.5",               // 2.4.1 不存在 → 2.4.5
-            "ws": "7.5.9",                 // 7.5.10 不存在 → 7.5.9
-            "set-function-length": "1.2.1" // 1.2.2 不存在 → 1.2.1
+            "eslint": "8.57.1",
+            "yaml": "2.4.5",
+            "ws": "7.5.9",
+            "set-function-length": "1.2.1"
           };
 
-          // merges to overrides
           pkg.overrides = Object.assign({}, pkg.overrides || {}, pins);
 
-          // 同步到各依赖段（若本来已声明）
           for (const sect of ["dependencies","devDependencies","optionalDependencies","peerDependencies"]) {
             if (!pkg[sect]) continue;
             for (const k of Object.keys(pins)) {
@@ -91,43 +80,35 @@ workflows:
           console.log('Pinned overrides:', pins);
           NODE
 
-          # 只生成/刷新 lock（不安装）
           npm install --package-lock-only --ignore-scripts --no-audit
 
-          # 兜底修正（如果历史 lock 中仍遗留了不存在的版本号）
           if [ -f package-lock.json ]; then
             sed -i.bak 's/"yaml": "2\.4\.1"/"yaml": "2.4.5"/g' package-lock.json || true
             sed -i.bak 's/"ws": "7\.5\.10"/"ws": "7.5.9"/g'  package-lock.json || true
             sed -i.bak 's/"set-function-length": "1\.2\.2"/"set-function-length": "1.2.1"/g' package-lock.json || true
           fi
 
-      # ---- 3) 安装 JS 依赖（不用 npm ci，避免你之前的 EUSAGE）----
       - name: Install JS deps (no ci, lock-first)
         script: |
           set -euo pipefail
-          # 再保险：确保 lock 存在
           if [ ! -f package-lock.json ]; then
             npm install --package-lock-only --ignore-scripts --no-audit
           fi
           npm install --ignore-scripts --no-audit
 
-      # ---- 4) CocoaPods：Podfile 预修正（兼容 RN 解析 & 统一 Swift 版本）----
       - name: Prepare Podfile (safe resolver + Swift unification)
         script: |
           set -euo pipefail
           P=ios/Podfile
           test -f "$P"
 
-          # ①：安全 require（支持 Node hoisting 的解析方式）
           ruby - <<'RUBY'
           path = 'ios/Podfile'
           s = File.read(path)
 
-          # 如果没定义 node 解析函数，插入一个
           unless s.include?("def node_require(")
             inject = <<~'HEAD'
             def node_require(script)
-              # Resolve script with node to allow for hoisting
               require Pod::Executable.execute_command('node', ['-p',
                 "require.resolve(
                   '\#{script}',
@@ -135,7 +116,6 @@ workflows:
                 )", __dir__]).strip
             end
 
-            # --- SAFE Expo autolinking (only if Expo is installed) ---
             expo_pkg = `node -e "try{console.log(require.resolve('expo/package.json'))}catch(e){}"`.strip
             if !expo_pkg.empty? && File.exist?(File.join(File.dirname(expo_pkg), "scripts/autolinking.rb"))
               require File.join(File.dirname(expo_pkg), "scripts/autolinking")
@@ -152,7 +132,6 @@ workflows:
             s = inject + "\n" + s
           end
 
-          # ②：platform 至少 15.1（兼容现有白标），如已存在则不动
           unless s =~ /^\s*platform\s+:ios,/
             s = s.sub(/^/, "platform :ios, '15.1'\n")
           end
@@ -161,8 +140,6 @@ workflows:
           puts "Podfile base prepared."
           RUBY
 
-          # ③：注入 pre_install: 统一所有 Pods 的 swift_version=5.9，避免
-          #     "[!] There may only be up to 1 unique SWIFT_VERSION per target" 报错
           ruby - <<'RUBY'
           path = 'ios/Podfile'
           s = File.read(path)
@@ -170,18 +147,15 @@ workflows:
           pre_blk = <<~'PRE'
           pre_install do |installer|
             installer.pod_targets.each do |pod|
-              # 强制每个 Pod 的 Swift 版本为 5.9
               begin
                 pod.swift_version = '5.9'
               rescue
-                # 某些旧 CocoaPods 可能无此属性，忽略
               end
             end
           end
           PRE
 
           if s.include?('pre_install do |installer|')
-            # 已存在就不重复注入
             puts "pre_install present, skip inject."
           else
             s << "\n" + pre_blk + "\n"
@@ -190,17 +164,12 @@ workflows:
           end
           RUBY
 
-      # ---- 5) Pod repo 更新 + 安装 ----
       - name: Install pods
         script: |
           set -euo pipefail
           cd ios
           pod repo update
-          # 用 --verbose 便于排错；若你觉得太吵，可移除
           pod install --verbose
-
-    # 本工作流只需要跑到安装 Pods 成功即可，所以下面不打包
-    # artifacts / publishing 略
 
       # # --- 5) pod install ---
       # - name: Install pods (with repo update)
