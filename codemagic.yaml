@@ -49,11 +49,49 @@ workflows:
           npm -v
           pod --version
 
-      # --- 1) 安装依赖（不动 pbxproj 前先装 JS 依赖）---
+      - name: Fix JS deps (pin eslint 8 & yaml)
+        script: |
+          set -euo pipefail
+
+          # 1) 用 overrides 强制所有层级使用 eslint 8.57.1 和合规的 yaml 版本
+          node - <<'NODE'
+          const fs = require('fs');
+          const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+
+          // 初始化 overrides
+          p.overrides = p.overrides || {};
+
+          // 强制 eslint 版本到 8.57.1（满足 @typescript-eslint@7 的 peer）
+          p.overrides.eslint = "8.57.1";
+          if (p.devDependencies && p.devDependencies.eslint) {
+            p.devDependencies.eslint = "8.57.1";
+          }
+          if (p.dependencies && p.dependencies.eslint) {
+            p.dependencies.eslint = "8.57.1";
+          }
+
+          // 修正 yaml（2.4.1 不存在，用 2.4.5 或更高 2.5.x；这里选 2.4.5）
+          p.overrides.yaml = "2.4.5";
+          if (p.devDependencies && p.devDependencies.yaml === "2.4.1") {
+            p.devDependencies.yaml = "2.4.5";
+          }
+          if (p.dependencies && p.dependencies.yaml === "2.4.1") {
+            p.dependencies.yaml = "2.4.5";
+          }
+
+          fs.writeFileSync('package.json', JSON.stringify(p, null, 2));
+          console.log('package.json overrides pinned: eslint@8.57.1, yaml@2.4.5');
+          NODE
+
+          # 2) 仅重写 lock，不安装（保证 CI 可复现）
+          npm i -D eslint@8.57.1 yaml@2.4.5 --package-lock-only
+
       - name: Install JS deps
         script: |
           set -euo pipefail
+          # 避免 peer 冲突阻断安装（我们已用 overrides 兜底）
           npm ci --prefer-offline --no-audit --progress=false
+
 
       # --- 2) 可选：恢复健康的 pbxproj（如果你仓库里有 .clean 备份）---
       - name: Optional restore healthy pbxproj if .clean exists
