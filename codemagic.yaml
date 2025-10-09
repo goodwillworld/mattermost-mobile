@@ -13,6 +13,9 @@ workflows:
         NOTI_BUNDLE_ID:  "com.jboth.mine.NotificationService"
         APP_GROUP_ID: "group.com.jboth.mine"
         CI: "true"  # 跳过部分 RN 检查
+        MAIN_PROFILE_UUID: "YOUR_MAIN_UUID"  # 从本地提取，e.g., 8GVTYCAZTU-...
+        SHARE_PROFILE_UUID: "YOUR_SHARE_UUID"  # e.g., 8SF3HMCDBH-...
+        NOTI_PROFILE_UUID: "YOUR_NOTI_UUID"  # e.g., 2P7BZN4KYD-...
       # 建议把以下三项设置为加密环境变量（在 Codemagic UI 中配置）
       # APP_STORE_CONNECT_PRIVATE_KEY: |
       # APP_STORE_CONNECT_KEY_ID: UZ33M397NY
@@ -20,10 +23,10 @@ workflows:
       ios_signing:
         certificates:
           - DistributionCert  # UI 上传的证书名称
-        provisioning_profiles:  # 修复：profile 名称匹配可用选项
-          - jboth_chat  # 主 App Profile UI 名称
-          - jboth_share  # Share Extension Profile UI 名称
-          - jboth_notification  # Notification Service Profile UI 名称
+        provisioning_profiles:  # 名称匹配 UI
+          - jboth_chat
+          - jboth_share
+          - jboth_notification
 
     cache:
       cache_paths:
@@ -118,7 +121,7 @@ workflows:
             echo "Expo not found -> patching Podfile"
             cp "$PODFILE" "$PODFILE.bak"
             sed -i.bak -E 's/^(require .*expo.*autolinking.*)$/# CM_PATCH: \1/' "$PODFILE" || true
-            sed -i.bak -E 's/^(.*require .*require\.resolve\(.*expo\/package\.json.*\).*)$/# CM_PATCH: \1/' "$PODFILE" || true
+            sed -i.bak -E 's/^(.*require .*require\.resolve$$ .*expo\/package\.json.* $$.*)$/# CM_PATCH: \1/' "$PODFILE" || true
             sed -i.bak -E 's/^\s*use_expo_modules!\s*$/  # CM_PATCH: use_expo_modules!/' "$PODFILE" || true
             diff -u "$PODFILE.bak" "$PODFILE" || true
           else
