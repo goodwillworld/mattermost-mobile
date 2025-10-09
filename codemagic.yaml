@@ -92,6 +92,16 @@ workflows:
           # 仅作用于主工程，避免 node_modules 的子工程被误改
           xcode-project use-profiles --project ios/Mattermost.xcodeproj
 
+      - name: Run apply_profiles.sh
+        script: |
+          set -euo pipefail
+          if [ ! -x scripts/apply_profiles.sh ]; then
+            echo "scripts/apply_profiles.sh not found or not executable"
+            exit 1
+          fi
+          bash scripts/apply_profiles.sh
+
+
       - name: Show build signing for each target
         script: |
           set -e
