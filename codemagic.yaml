@@ -49,42 +49,46 @@ workflows:
           npm -v
           pod --version
 
-      - name: Fix JS deps (pin eslint 8 & yaml)
+      - name: Fix JS deps (pin eslint 8 / yaml / ws)
         script: |
           set -euo pipefail
 
-          # 1) 用 overrides 强制所有层级使用 eslint 8.57.1 和合规的 yaml 版本
+          # 始终使用官方源，避免镜像缺包
+          npm config set registry https://registry.npmjs.org/
+
+          # 用 overrides 统一钉死版本（影响所有间接依赖）
           node - <<'NODE'
           const fs = require('fs');
-          const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const p = JSON.parse(fs.readFileSync('package.json','utf8'));
 
-          // 初始化 overrides
-          p.overrides = p.overrides || {};
+          p.overrides = Object.assign({}, p.overrides, {
+            "eslint": "8.57.1",   // 满足 @typescript-eslint@7 的 peer
+            "yaml":   "2.4.5",    // 2.4.1 不存在
+            "ws":     "7.5.9"     // 7.5.10 不存在，钉到 7.5.9
+          });
 
-          // 强制 eslint 版本到 8.57.1（满足 @typescript-eslint@7 的 peer）
-          p.overrides.eslint = "8.57.1";
-          if (p.devDependencies && p.devDependencies.eslint) {
-            p.devDependencies.eslint = "8.57.1";
-          }
-          if (p.dependencies && p.dependencies.eslint) {
-            p.dependencies.eslint = "8.57.1";
-          }
-
-          // 修正 yaml（2.4.1 不存在，用 2.4.5 或更高 2.5.x；这里选 2.4.5）
-          p.overrides.yaml = "2.4.5";
-          if (p.devDependencies && p.devDependencies.yaml === "2.4.1") {
-            p.devDependencies.yaml = "2.4.5";
-          }
-          if (p.dependencies && p.dependencies.yaml === "2.4.1") {
-            p.dependencies.yaml = "2.4.5";
+          // 顺便把根依赖里同名条目也修到可用版本（若存在）
+          for (const sect of ["dependencies","devDependencies"]) {
+            if (!p[sect]) continue;
+            if (p[sect].eslint) p[sect].eslint = "8.57.1";
+            if (p[sect].yaml   && p[sect].yaml === "2.4.1") p[sect].yaml = "2.4.5";
+            if (p[sect].ws     && p[sect].ws   === "7.5.10") p[sect].ws   = "7.5.9";
           }
 
           fs.writeFileSync('package.json', JSON.stringify(p, null, 2));
-          console.log('package.json overrides pinned: eslint@8.57.1, yaml@2.4.5');
+          console.log('overrides pinned: eslint@8.57.1, yaml@2.4.5, ws@7.5.9');
           NODE
 
-          # 2) 仅重写 lock，不安装（保证 CI 可复现）
-          npm i -D eslint@8.57.1 yaml@2.4.5 --package-lock-only
+          # 仅更新 lock，不安装；确保 lock 里把冲突版本替换掉
+          npm i -D eslint@8.57.1 yaml@2.4.5 ws@7.5.9 --package-lock-only
+
+          # 可选：若历史 lock 中仍残留 7.5.10，强制替换（容错）
+          if grep -q '"ws": "7.5.10"' package-lock.json 2>/dev/null; then
+            sed -i.bak 's/"ws": "7.5.10"/"ws": "7.5.9"/g' package-lock.json || true
+          fi
+
+          npm cache verify || true
+
 
       - name: Install JS deps
         script: |
