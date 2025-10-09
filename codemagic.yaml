@@ -83,6 +83,47 @@ workflows:
           set -euo pipefail
           bash scripts/setup_signing.sh
 
+      - name: "MUST: materialize & verify clean pbxproj (.clean)"
+        script: |
+          set -euo pipefail
+          SRC="ios/Mattermost.xcodeproj/project.pbxproj.clean"
+          DST="ios/Mattermost.xcodeproj/project.pbxproj"
+
+          echo "==> assert .clean exists"
+          ls -l "$SRC"
+
+          echo "==> copy .clean -> pbxproj"
+          cp "$SRC" "$DST"
+
+          echo "==> compare checksums to ensure overwrite really happened"
+          md5_src=$(md5 -q "$SRC")
+          md5_dst=$(md5 -q "$DST")
+          echo "SRC MD5: $md5_src"
+          echo "DST MD5: $md5_dst"
+          if [ "$md5_src" != "$md5_dst" ]; then
+            echo "ERROR: pbxproj not overwritten correctly"; exit 1
+          fi
+
+          echo "==> basic sanity (header + around suspicious line)"
+          head -n 3 "$DST" || true
+          # 如果你知道之前报错是 2094 行，就把 2088..2102 打印出来确认是否完整
+          sed -n '2088,2102p' "$DST" || true
+
+          echo "==> xcodebuild -project -list (must succeed)"
+          xcodebuild -project ios/Mattermost.xcodeproj -list
+
+      - name: "Show first bad place (lint-like, not fatal)"
+        script: |
+          set -euo pipefail
+          # 简单查找缺少分号的常见模式（仅提示）
+          awk '/CODE_SIGN_IDENTITY/ && $0 !~ /;$/ {print NR":"$0}' ios/Mattermost.xcodeproj/project.pbxproj || true
+
+      - name: "List schemes via workspace (should succeed if project is fine)"
+        script: |
+          set -e
+          xcodebuild -workspace ios/Mattermost.xcworkspace -list
+
+
       - name: "Install pods"
         script: |
           set -e
