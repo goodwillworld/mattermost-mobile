@@ -17,7 +17,7 @@ workflows:
       ios_signing:
         # Let Codemagic fetch matching certificate(s)/profile(s) you uploaded/fetched
         # for this bundle id and its extensions (Share/Notification).
-        distribution_type: ad_hoc   # app_store | ad_hoc | development | enterprise
+        distribution_type: app_store   # app_store | ad_hoc | development | enterprise
         bundle_identifier: com.jboth.mine
 
     scripts:
