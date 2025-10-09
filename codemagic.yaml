@@ -199,56 +199,84 @@ workflows:
       - name: "Patch Podfile: add C++17 settings for Pods (incl. secure-pdf-viewer)"
         script: |
           set -euo pipefail
+
           P=ios/Podfile
           test -f "$P"
+
+          echo "==> Backup Podfile to ios/Podfile.bak"
+          cp "$P" ios/Podfile.bak
 
           ruby - <<'RUBY'
           path = 'ios/Podfile'
           s = File.read(path)
 
-          inject = <<~'INJECT'
-            # === RN C++ pods need C++20 for std::unordered_map::contains etc. ===
-            react_cpp20_targets = installer.pods_project.targets.select { |t| t.name.start_with?('React-') }
-
-              # 精准包含触发的 target，同时兼顾可能的相关 C++ 目标
-              t.name == 'React-perflogger' || t.name == 'React-Fabric' || t.name == 'React-FabricComponents'
-            end
-
-            react_cpp20_targets.each do |t|
-              t.build_configurations.each do |cfg|
-                bs = cfg.build_settings
-                # 升级到 gnu++20
-                bs['CLANG_CXX_LANGUAGE_STANDARD'] = 'gnu++20'
-                # flags 中如已有 -std=gnu++17，替换成 gnu++20；否则追加
-                flags = Array(bs['OTHER_CPLUSPLUSFLAGS']).map(&:to_s)
-                if flags.any? { |f| f.include?('-std=gnu++17') }
-                  flags = flags.map { |f| f.include?('-std=gnu++17') ? '-std=gnu++20' : f }
-                else
-                  flags << '-std=gnu++20'
-                end
-                bs['OTHER_CPLUSPLUSFLAGS'] = flags.uniq
-                # 统一 libc++
-                bs['CLANG_CXX_LIBRARY'] = 'libc++'
-              end
-            end
-          INJECT
-
-          if s =~ /post_install do \|installer\|/m
-            s = s.gsub(/post_install do \|installer\|.*?end/m) do |blk|
-              blk.include?('react_cpp20_targets') ? blk : blk.sub(/end\s*\z/, inject + "\nend")
-            end
-          else
-            s << <<~POST
-
-            post_install do |installer|
-          #{inject}
-            end
-            POST
+          # 1) 删除所有已存在的 post_install 块（防止多重注入导致 end 数量不匹配）
+          #    非贪婪 + 多行；循环直到没有匹配为止
+          loop do
+            before = s.dup
+            s = s.sub(/post_install\s+do\s+\|installer\|.*?^\s*end\s*$/m, '')
+            break if s == before
           end
 
+          # 2) 规范的 post_install：Pods 全局 C++17；React-* 提升为 C++20；secure-pdf-viewer 开启异常/RTTI
+          canonical = <<~'POST'
+
+            # === Canonical post_install: C++ toolchain settings ===
+            post_install do |installer|
+              # 默认：所有 Pods 统一为 gnu++17（兼容面更好）
+              installer.pods_project.targets.each do |t|
+                t.build_configurations.each do |cfg|
+                  bs = cfg.build_settings
+                  bs['CLANG_CXX_LANGUAGE_STANDARD'] = 'gnu++17'
+                  bs['CLANG_CXX_LIBRARY'] = 'libc++'
+                  flags = Array(bs['OTHER_CPLUSPLUSFLAGS']).map(&:to_s)
+                  # 去掉可能已有的 -std=*，只保留我们需要的一个
+                  flags.reject! { |f| f.start_with?('-std=') }
+                  flags << '-std=gnu++17'
+                  bs['OTHER_CPLUSPLUSFLAGS'] = flags.uniq
+                end
+              end
+
+              # React 系列 C++ 目标需要 C++20（例如 std::unordered_map::contains）
+              react_cpp_targets = installer.pods_project.targets.select { |t| t.name.start_with?('React-') }
+              react_cpp_targets.each do |t|
+                t.build_configurations.each do |cfg|
+                  bs = cfg.build_settings
+                  bs['CLANG_CXX_LANGUAGE_STANDARD'] = 'gnu++20'
+                  flags = Array(bs['OTHER_CPLUSPLUSFLAGS']).map(&:to_s)
+                  flags.reject! { |f| f.start_with?('-std=') }
+                  flags << '-std=gnu++20'
+                  bs['OTHER_CPLUSPLUSFLAGS'] = flags.uniq
+                  bs['CLANG_CXX_LIBRARY'] = 'libc++'
+                end
+              end
+
+              # 特别处理 secure-pdf-viewer（ObjC++，有时需要异常/RTTI）
+              spv = installer.pods_project.targets.find { |t| t.name == 'secure-pdf-viewer' }
+              if spv
+                spv.build_configurations.each do |cfg|
+                  bs = cfg.build_settings
+                  bs['GCC_ENABLE_CPP_EXCEPTIONS'] = 'YES'
+                  bs['GCC_ENABLE_CPP_RTTI'] = 'YES'
+                end
+              end
+            end
+          POST
+
+          # 3) 末尾追加规范块（与主体间空一行）
+          s = s.rstrip + "\n\n" + canonical + "\n"
+
           File.write(path, s)
-          puts "Podfile post_install updated: React* pods use gnu++20."
+          puts "Rewrote Podfile post_install to a single canonical block."
           RUBY
+
+          echo "==> Quick syntax/visual check"
+          nl -ba ios/Podfile | sed -n '1,160p' || true
+
+          echo "==> pod install --repo-update"
+          pushd ios >/dev/null
+          pod install --repo-update
+          popd >/dev/null
 
 
       - name: "Install pods"
