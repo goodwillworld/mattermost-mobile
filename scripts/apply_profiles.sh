@@ -55,65 +55,56 @@ find_profile() {
 }
 
 patch_target_signing() {
-  local target="$1" spec="$2" uuid="$3" team="$4" push="$5" groups="$6"
-  python3 - "$PBX" "$target" "$spec" "$uuid" "$team" "$push" "$groups" <<'PY'
-import sys, re, io, json
-pbx, target, spec, uuid, team, push, groups = sys.argv[1:8]
+  local target="$1" spec="$2" uuid="$3" team="$4"
+  python3 - "$PBX" "$target" "$spec" "$uuid" "$team" <<'PY'
+import sys, re, io
+pbx, target, spec, uuid, team = sys.argv[1:6]
 s = io.open(pbx, 'r', encoding='utf-8').read()
 
 def subn(pat, rep, text):
   return re.subn(pat, rep, text, flags=re.M|re.S)
 
-def patch_key_near_target(text, key, value, target):
-  # 目标注释块内
-  text, n1 = subn(r'(\/\* %s \*\/[\s\S]*?%s\s*=)\s*[^;]+;' % (re.escape(target), re.escape(key)),
-                  r'\g<1> %s;' % value, text)
-  # 或者靠近该 target 的 buildSettings（通过 PRODUCT_NAME）
-  text, n2 = subn(r'(%s\s*=)\s*[^;]+;([\s\S]{0,400}PRODUCT_NAME\s*=\s*"?%s"?;)' % (re.escape(key), re.escape(target)),
-                  r'\g<1> %s;\2' % value, text)
-  return text, n1+n2
+def patch_key(text, key, value, target):
+  # 在目标注释块附近
+  text, _ = subn(r'(\/\* %s \*\/[\s\S]*?%s\s*=)\s*[^;]+;' % (re.escape(target), re.escape(key)),
+                 r'\g<1> %s;' % value, text)
+  # 或在 buildSettings + PRODUCT_NAME 约 400 字符邻近
+  text, _ = subn(r'(%s\s*=)\s*[^;]+;([\s\S]{0,400}PRODUCT_NAME\s*=\s*"?%s"?;)' % (re.escape(key), re.escape(target)),
+                 r'\g<1> %s;\2' % value, text)
+  # 若都没有命中，则尝试在该 target 的 buildSettings 块里“补一行”（保守插入）
+  blk_pat = re.compile(r'(\/\* %s \*\/\s*=\s*\{[\s\S]*?buildSettings\s*=\s*\{)([\s\S]*?)(\};\s*\};)' % re.escape(target))
+  m = blk_pat.search(text)
+  if m and key not in m.group(2):
+    start, mid, end = m.groups()
+    mid2 = mid + f'\n\t\t\t\t{key} = {value};'
+    text = text[:m.start()] + start + mid2 + end + text[m.end():]
+  return text
 
-# 写入 SPECIFIER/UUID（通用键 + sdk 作用域键）
-for key, val in [
-  ('PROVISIONING_PROFILE_SPECIFIER', spec),
-  ('PROVISIONING_PROFILE', uuid),
-  ('PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]', spec),
-  ('PROVISIONING_PROFILE[sdk=iphoneos*]', uuid),
+# 写入手动签名 + 证书 + TEAM
+for K,V in [
   ('CODE_SIGN_STYLE', 'Manual'),
+  ('CODE_SIGN_IDENTITY', 'Apple Distribution'),
+  ('CODE_SIGN_IDENTITY[sdk=iphoneos*]', 'Apple Distribution'),
 ]:
-  s, _ = patch_key_near_target(s, key, val, target)
+  s = patch_key(s, K, V, target)
 
-# DEVELOPMENT_TEAM
 if team:
-  s, _ = patch_key_near_target(s, 'DEVELOPMENT_TEAM', team, target)
+  s = patch_key(s, 'DEVELOPMENT_TEAM', team, target)
 
-# SystemCapabilities：打开 App Groups；主 App 额外打开 Push
-def enable_capability(text, target, cap_key):
-  pat = r'(/[*] %s [*]/\s*=\s*{[\s\S]*?);\s*/\* End PBXNativeTarget section \*/' % re.escape(target)
-  # 尝试在 TargetAttributes 写入
-  if 'TargetAttributes' not in text:
-    return text  # 忽略
-  # 在 TargetAttributes 区域统一写，简单做全局替换
-  # 开启 capability: com.apple.ApplicationGroups.iOS 或 com.apple.Push
-  cap_map = {
-    'groups': 'com.apple.ApplicationGroups.iOS',
-    'push': 'com.apple.Push'
-  }
-  ck = cap_map[cap_key]
-  # 在任一位置写一次 SystemCapabilities 开关（Xcode 不严格校验每 target，都能识别）
-  if 'SystemCapabilities' not in text or ck not in text:
-    text = re.sub(r'(TargetAttributes\s*=\s*\{)', r'\1 /* patched */', text)
-  # 轻量方式：无害地添加开关（避免复杂 AST 解析）
-  return text.replace('/* End PBXProject section */',
-                      '/* End PBXProject section */')
-
-# 简化处理：不少工程即使不写 SystemCapabilities，只要 entitlements + profile 对齐也能过，
-# 这里保留函数但不强制插入，避免误改结构。
+# 写入 profile（通用键 + sdk 作用域键 + 历史 UUID 键）
+for K,V in [
+  ('PROVISIONING_PROFILE_SPECIFIER', spec),
+  ('PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]', spec),
+  ('PROVISIONING_PROFILE', uuid),
+  ('PROVISIONING_PROFILE[sdk=iphoneos*]', uuid),
+]:
+  s = patch_key(s, K, V, target)
 
 io.open(pbx, 'w', encoding='utf-8').write(s)
-print(f"Patched {target}: set Manual signing, SPECIFIER/UUID (incl. sdk=iphoneos*), TEAM={team or '(skip)'}")
+print(f"Patched {target}: Manual signing + TEAM + IDENTITY + SPECIFIER/UUID (incl. sdk=iphoneos*)")
 PY
 }
+
 
 apply_profile_to_pbx() {
   local target="$1" bundle="$2" need_groups="$3" need_push="$4"

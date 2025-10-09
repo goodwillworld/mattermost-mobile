@@ -168,6 +168,24 @@ workflows:
           </plist>
           EOF
 
+      - name: Dump signing keys per target (Release + iphoneos)
+        script: |
+          set -e
+          for T in Mattermost MattermostShare NotificationService; do
+            echo "---- $T ----"
+            xcodebuild -workspace ios/Mattermost.xcworkspace \
+              -scheme Mattermost \
+              -configuration Release \
+              -sdk iphoneos \
+              -showBuildSettings \
+              | awk -v t="$T" '
+                  /Build settings for action build and target/ {p = index($0, t)>0}
+                  p && /(PRODUCT_BUNDLE_IDENTIFIER|CODE_SIGN_ENTITLEMENTS|DEVELOPMENT_TEAM|CODE_SIGN_STYLE|CODE_SIGN_IDENTITY|PROVISIONING_PROFILE_SPECIFIER(\[sdk=iphoneos\*\])?|PROVISIONING_PROFILE(\[sdk=iphoneos\*\])?)/ {print}
+                ' \
+              | sed -E "s/^/$T: /" || true
+          done
+
+
       - name: Build archive
         script: |
           set -e
