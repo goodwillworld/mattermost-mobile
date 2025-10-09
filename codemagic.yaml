@@ -105,6 +105,33 @@ workflows:
           echo "==> Profiles in runner:"
           ls -l "$HOME/Library/MobileDevice/Provisioning Profiles" || true
 
+      - name: Inspect installed provisioning profiles (verbose)
+        script: |
+          set -euo pipefail
+          PDIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          echo "==> Profiles in $PDIR"
+          ls -l "$PDIR" || true
+          shopt -s nullglob
+          for f in "$PDIR"/*.mobileprovision "$PDIR"/*.provisionprofile; do
+            echo "----- $f -----"
+            /usr/bin/security cms -D -i "$f" > /tmp/p.plist || { echo "  failed to decode"; continue; }
+            /usr/bin/plutil -p /tmp/p.plist | head -n 5 || true
+            echo "Name:  $(/usr/bin/plutil -extract Name raw -o - /tmp/p.plist 2>/dev/null || true)"
+            echo "UUID:  $(/usr/bin/plutil -extract UUID raw -o - /tmp/p.plist 2>/dev/null || true)"
+            echo "AppID: $(/usr/bin/plutil -extract Entitlements.application-identifier raw -o - /tmp/p.plist 2>/dev/null || true)"
+            echo -n "Has App Groups: "
+            if /usr/libexec/PlistBuddy -c "Print :Entitlements:com.apple.security.application-groups" /tmp/p.plist >/dev/null 2>&1; then
+              echo "yes"
+              echo "Groups:"
+              /usr/libexec/PlistBuddy -c "Print :Entitlements:com.apple.security.application-groups" /tmp/p.plist 2>/dev/null || true
+            else
+              echo "no"
+            fi
+            echo -n "aps-environment: "
+            /usr/bin/plutil -extract Entitlements.aps-environment raw -o - /tmp/p.plist 2>/dev/null || echo "(none)"
+          done
+
+
       - name: Run apply_profiles.sh (from repo)
         script: |
           set -euo pipefail
