@@ -13,12 +13,10 @@ workflows:
         SHARE_BUNDLE_ID: "com.jboth.mine.MattermostShare"
         NOTI_BUNDLE_ID: "com.jboth.mine.NotificationService"
         APP_GROUP_ID: "group.com.jboth.mine"
-        TEAM_ID: "866Y22894T"   # 可选：填你的 10 位 Team ID，可强制写入 Xcode 工程
+        TEAM_ID: "866Y22894T"   # 可选：你的 10 位 Team ID；如需强制写入 Xcode 工程则填写
         CI: "true"
       ios_signing:
-        # TestFlight 用 app_store；若需 Ad Hoc，把这里与下方 export_options 的 method 同步改成 ad_hoc / ad-hoc
-        distribution_type: app_store
-        bundle_identifier: com.jboth.mine
+        distribution_type: app_store    # 如果要 Ad Hoc，请改为 ad_hoc，并同步修改下方 export_options 的 method
 
     scripts:
       - name: Print Xcode / Ruby / CocoaPods versions
@@ -54,26 +52,18 @@ workflows:
           set -e
           yarn install --frozen-lockfile || npm ci
 
-      - name: Patch Podfile resolver (point to project root)
+      - name: Patch Podfile resolver (point to project root, no heredoc)
         script: |
           set -euo pipefail
-          PODFILE="ios/Podfile"
+          PODFILE="ios/Podfile"   # 注意大小写：Podfile
           if [ -f "$PODFILE" ]; then
-            cat > patch_podfile.rb <<'RB'
-path = "ios/Podfile"
-s = File.read(path)
-if s.include?("require Pod::Executable.execute_command('node', ['-p'")
-  s.gsub!(
-    /require Pod::Executable.execute_command\(\s*'node'.*?\)\s*\]/m,
-    "react_native_pods = Pod::Executable.execute_command(\n  'node',\n  [\n    '-p',\n    <<~'NODE',\n      require.resolve(\n        'react-native/scripts/react_native_pods.rb',\n        { paths: [process.argv[1]] },\n      )\n    NODE,\n    Pod::Config.instance.project_root.to_s\n  ]\n)\nrequire react_native_pods"
-  )
-  File.write(path, s)
-  puts "Patched Podfile resolver to use project_root"
-else
-  puts "Podfile resolver already modernized or not matching; skip."
-end
-RB
-            ruby patch_podfile.rb
+            # 仅当是旧写法（使用 require Pod::Executable.execute_command('node', ['-p'...）时才替换
+            if grep -q "require Pod::Executable.execute_command('node', \\['-p'" "$PODFILE"; then
+              perl -0777 -i -pe "s/require Pod::Executable.execute_command\\(\\s*'node'.*?\\)\\s*\\]/react_native_pods = Pod::Executable.execute_command(\\n  'node',\\n  [\\n    '-p',\\n    <<~'NODE',\\n      require.resolve(\\n        'react-native\\/scripts\\/react_native_pods.rb',\\n        { paths: [process.argv[1]] },\\n      )\\n    NODE,\\n    Pod::Config.instance.project_root.to_s\\n  ]\\n)\\nrequire react_native_pods/s" "$PODFILE"
+              echo "Patched Podfile resolver to use project_root"
+            else
+              echo "Podfile resolver already modernized or not matching; skip."
+            fi
           else
             echo "Podfile not found at ios/Podfile"
           fi
@@ -153,7 +143,7 @@ ensure_app_group () {
 }
 
 ensure_push_for_main () {
-  # 主 App 需要 Push；TestFlight/App Store 为 production
+  # 主 App 需要 Push；TestFlight/App Store 用 production
   /usr/libexec/PlistBuddy -c "Delete :aps-environment" "$APP_ENT" >/dev/null 2>&1 || true
   /usr/libexec/PlistBuddy -c "Add :aps-environment string production" "$APP_ENT"
   echo "OK: Set aps-environment=production for main app"
@@ -255,7 +245,7 @@ EOF
       - name: Generate export options (App Store)
         script: |
           set -e
-          # 若需 Ad Hoc，请把 method 改成 ad-hoc，并与上方 distribution_type 同步
+          # 若需 Ad Hoc，请把 method 改为 ad-hoc，并与上方 distribution_type 同步
           cat > export_options.plist <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
