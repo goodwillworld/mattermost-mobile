@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Variables expected from codemagic.yaml env
+# Expected env vars
 MAIN_BUNDLE_ID="${MAIN_BUNDLE_ID:?}"
 SHARE_BUNDLE_ID="${SHARE_BUNDLE_ID:?}"
 NOTI_BUNDLE_ID="${NOTI_BUNDLE_ID:?}"
@@ -10,73 +10,105 @@ APP_GROUP_ID="${APP_GROUP_ID:?}"
 ROOT="$(pwd)"
 IOS_DIR="${ROOT}/ios"
 
-echo "==> Ensuring entitlements include App Group ${APP_GROUP_ID}"
-
-# Paths (adjust if your repo uses different folders)
 APP_ENT="${IOS_DIR}/Mattermost/Mattermost.entitlements"
 SHARE_ENT="${IOS_DIR}/MattermostShare/MattermostShare.entitlements"
 NOTI_ENT="${IOS_DIR}/NotificationService/NotificationService.entitlements"
 
 mkdir -p "$(dirname "$APP_ENT")" "$(dirname "$SHARE_ENT")" "$(dirname "$NOTI_ENT")"
 
-ensure_entitlements () {
+create_min_plist () {
   local file="$1"
-  if [ ! -f "$file" ]; then
-    cat > "$file" <<EOF
+  cat > "$file" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
-<dict>
-</dict>
+<dict/>
 </plist>
 EOF
+}
+
+normalize_plist () {
+  local file="$1"
+  if [ ! -f "$file" ]; then
+    create_min_plist "$file"
+    return 0
   fi
-  # Set application-groups array to contain our group id
-  /usr/bin/plutil -replace 'com.apple.security.application-groups' -json "[\"${APP_GROUP_ID}\"]" "$file"
+
+  # Validate; if invalid, recreate
+  if ! /usr/bin/plutil -lint "$file" >/dev/null 2>&1; then
+    echo "WARN: $file is invalid, recreating minimal dict"
+    create_min_plist "$file"
+    return 0
+  fi
+
+  # Ensure top-level is a dict; if not, recreate
+  local type
+  type="$(/usr/bin/plutil -p "$file" 2>/dev/null | head -n1 || true)"
+  if [[ "${type:-}" != \{* ]]; then
+    echo "WARN: $file top-level is not a dict, recreating"
+    create_min_plist "$file"
+  fi
 }
 
-ensure_entitlements "$APP_ENT"
-ensure_entitlements "$SHARE_ENT"
-ensure_entitlements "$NOTI_ENT"
+ensure_app_group () {
+  local file="$1"
+  normalize_plist "$file"
 
-echo "==> Done entitlements"
+  # Remove wrong-typed existing key if needed, then create array and set string
+  if /usr/libexec/PlistBuddy -c "Print :com.apple.security.application-groups" "$file" >/dev/null 2>&1; then
+    if ! /usr/libexec/PlistBuddy -c "Print :com.apple.security.application-groups" "$file" 2>&1 | head -n1 | grep -q "Array {"; then
+      /usr/libexec/PlistBuddy -c "Delete :com.apple.security.application-groups" "$file" || true
+    fi
+  fi
 
-# Try to set bundle identifiers in the pbxproj for three targets.
-# We attempt a conservative in-place replacement for known targets.
+  /usr/libexec/PlistBuddy -c "Add :com.apple.security.application-groups array" "$file" 2>/dev/null || true
+
+  # Clear existing items
+  COUNT="$(/usr/libexec/PlistBuddy -c "Print :com.apple.security.application-groups" "$file" 2>/dev/null | grep -E '^\s*[0-9]+\s*=\s*' | wc -l | tr -d ' ')"
+  if [[ "${COUNT:-0}" -gt 0 ]]; then
+    for (( i=COUNT-1; i>=0; i-- )); do
+      /usr/libexec/PlistBuddy -c "Delete :com.apple.security.application-groups:$i" "$file" || true
+    done
+  fi
+  /usr/libexec/PlistBuddy -c "Add :com.apple.security.application-groups:0 string ${APP_GROUP_ID}" "$file"
+  echo "OK: Set App Group in $(basename "$file")"
+}
+
+echo "==> Ensuring entitlements include App Group ${APP_GROUP_ID}"
+ensure_app_group "$APP_ENT"
+ensure_app_group "$SHARE_ENT"
+ensure_app_group "$NOTI_ENT"
+
+# Patch bundle identifiers best-effort
 PBX="${IOS_DIR}/Mattermost.xcodeproj/project.pbxproj"
+echo "==> Patching PRODUCT_BUNDLE_IDENTIFIER in ${PBX} (best-effort)"
 
-echo "==> Setting PRODUCT_BUNDLE_IDENTIFIERs in ${PBX}"
-
-set_bid () {
-  local target="$1"
-  local bid="$2"
-  python3 - "$PBX" "$target" "$bid" <<'PY'
+python3 - "$PBX" "$MAIN_BUNDLE_ID" "$SHARE_BUNDLE_ID" "$NOTI_BUNDLE_ID" <<'PY'
 import sys, re
-path, target, bid = sys.argv[1], sys.argv[2], sys.argv[3]
-s = open(path, 'r', encoding='utf-8').read()
+pbx, main_bid, share_bid, noti_bid = sys.argv[1:5]
+s = open(pbx, 'r', encoding='utf-8').read()
 
-# Heuristic: replace PRODUCT_BUNDLE_IDENTIFIER lines that are near a PRODUCT_NAME mentioning the target
-pattern = re.compile(r'(PRODUCT_BUNDLE_IDENTIFIER\s*=)\s*[^;]+(;\s*\n\s*PRODUCT_NAME\s*=\s*"?' + re.escape(target) + r'"?\s*;)', re.M)
-new_s, n = pattern.subn(r'\1 ' + bid + r'\2', s)
-if n == 0:
-    # Fallback: within blocks commented with /* TargetName */
-    pattern2 = re.compile(r'(/\* ' + re.escape(target) + r' \*/[\s\S]*?PRODUCT_BUNDLE_IDENTIFIER\s*=)\s*[^;]+;', re.M)
-    new_s, n = pattern2.subn(r'\1 ' + bid + r';', s)
-if n:
-    open(path, 'w', encoding='utf-8').write(new_s)
+def patch_target(s, target, bid):
+    patterns = [
+        (re.compile(r'(/\* %s \*/[\\s\\S]*?PRODUCT_BUNDLE_IDENTIFIER\\s*=)\\s*[^;]+;' % re.escape(target)), r'\\1 ' + bid + ';'),
+        (re.compile(r'(PRODUCT_BUNDLE_IDENTIFIER\\s*=)\\s*[^;]+(;\\s*\\n\\s*PRODUCT_NAME\\s*=\\s*"?' + re.escape(target) + r'"?\\s*;)'), r'\\1 ' + bid + r'\\2'),
+    ]
+    total = 0
+    for pat, rep in patterns:
+        s, n = pat.subn(rep, s)
+        total += n
+    return s, total
+
+total = 0
+for target, bid in [("Mattermost", main_bid), ("MattermostShare", share_bid), ("NotificationService", noti_bid)]:
+    s, n = patch_target(s, target, bid)
     print(f"Updated {n} occurrence(s) for target {target}")
-else:
-    print(f"WARNING: Could not locate PRODUCT_BUNDLE_IDENTIFIER for target {target}. Skipped.", file=sys.stderr)
+    total += n
+
+open(pbx, 'w', encoding='utf-8').write(s)
+print(f"Total updated: {total}")
 PY
-}
 
-set_bid "Mattermost" "${MAIN_BUNDLE_ID}"
-set_bid "MattermostShare" "${SHARE_BUNDLE_ID}"
-set_bid "NotificationService" "${NOTI_BUNDLE_ID}"
-
-echo "==> Bundle ID patching finished"
-
-# Print summary
 echo "Summary:"
 echo "  App bundle id:        ${MAIN_BUNDLE_ID}"
 echo "  Share bundle id:      ${SHARE_BUNDLE_ID}"
