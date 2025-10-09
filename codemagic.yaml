@@ -130,7 +130,7 @@ workflows:
           xcodebuild -workspace ios/Mattermost.xcworkspace -list
 
       # 兜底：若上一步失败，再从 HEAD 回滚一次并尝试修复
-      - name: Fallback: restore pbxproj from HEAD and heal again
+      - name: Fallback restore pbxproj from HEAD and heal again
         script: |
           set -euo pipefail
           git checkout -- ios/Mattermost.xcodeproj/project.pbxproj || true
