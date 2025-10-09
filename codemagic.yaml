@@ -14,22 +14,11 @@ workflows:
         NOTI_BUNDLE_ID: "com.jboth.mine.NotificationService"
         APP_GROUP_ID: "group.com.jboth.mine"
         CI: "true"
-
-    code_signing:
-      app_store_connect:
-        api_key: $APP_STORE_CONNECT_PRIVATE_KEY
-        key_id: $APP_STORE_CONNECT_KEY_ID
-        issuer_id: $APP_STORE_CONNECT_ISSUER_ID
-      provisioning_profiles:
-        - bundle_identifier: "com.jboth.mine"
-          profile_type: "IOS_APP_ADHOC"
-          create: true
-        - bundle_identifier: "com.jboth.mine.MattermostShare"
-          profile_type: "IOS_APP_ADHOC"
-          create: true
-        - bundle_identifier: "com.jboth.mine.NotificationService"
-          profile_type: "IOS_APP_ADHOC"
-          create: true
+      ios_signing:
+        # Let Codemagic fetch matching certificate(s)/profile(s) you uploaded/fetched
+        # for this bundle id and its extensions (Share/Notification).
+        distribution_type: ad_hoc   # app_store | ad_hoc | development | enterprise
+        bundle_identifier: com.jboth.mine
 
     scripts:
       - name: Xcode version
@@ -50,6 +39,11 @@ workflows:
           cd ios
           pod install --repo-update
 
+      - name: Apply provisioning profiles to Xcode project
+        script: |
+          # This uses the uploaded/fetched profiles referenced by ios_signing above
+          xcode-project use-profiles
+
       - name: Generate export options (ad-hoc)
         script: |
           cat > export_options.plist <<'EOF'
@@ -58,10 +52,9 @@ workflows:
           <plist version="1.0">
           <dict>
             <key>method</key><string>ad-hoc</string>
-            <key>signingStyle</key><string>automatic</string>
+            <key>signingStyle</key><string>manual</string>
             <key>destination</key><string>export</string>
             <key>compileBitcode</key><false/>
-            <key>iCloudContainerEnvironment</key><string>Production</string>
           </dict>
           </plist>
           EOF
@@ -69,7 +62,7 @@ workflows:
       - name: Build archive
         script: |
           cd ios
-          xcodebuild -workspace Mattermost.xcworkspace             -scheme Mattermost             -configuration Release             -archivePath build/ios/xcarchive/Mattermost.xcarchive             CODE_SIGN_STYLE=Automatic             COMPILER_INDEX_STORE_ENABLE=NO             archive | xcpretty && exit ${PIPESTATUS[0]}
+          xcodebuild -workspace Mattermost.xcworkspace             -scheme Mattermost             -configuration Release             -archivePath build/ios/xcarchive/Mattermost.xcarchive             CODE_SIGN_STYLE=Manual             COMPILER_INDEX_STORE_ENABLE=NO             archive | xcpretty && exit ${PIPESTATUS[0]}
 
       - name: Export IPA
         script: |
