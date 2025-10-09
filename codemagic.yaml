@@ -1,77 +1,85 @@
 workflows:
   ios-mattermost-release:
-    name: iOS Mattermost (Whitelabel) – Ad-hoc
-    max_build_duration: 120
+    name: iOS Mattermost (whitelabel) — up to pods
     instance_type: mac_mini_m2
+    max_build_duration: 120
     environment:
       vars:
-        # === 基本信息（按需修改）===
-        TEAM_ID: "866Y22894T"
-        APP_BUNDLE_ID: "com.jboth.mine"
-        SHARE_BUNDLE_ID: "com.jboth.mine.MattermostShare"
-        NOTIF_BUNDLE_ID: "com.jboth.mine.NotificationService"
-        APP_GROUP: "group.com.jboth.mine"
-        EXPORT_METHOD: "ad-hoc"
-        SCHEME: "Mattermost"
-        WORKSPACE: "ios/Mattermost.xcworkspace"
-        PROJECT: "ios/Mattermost.xcodeproj"
-        CONFIGURATION: "Release"
-        IOS_DEPLOYMENT_TARGET: "16.0"   # RN + 最近 Pods 兼容建议 16+
-        SWIFT_VERSION: "5.9"           # Xcode 16 对应 Swift 5.9/5.10, 设定一个稳定值
+        # 你的白标 App 基本变量（后续签名/打包会用到；本阶段不强依赖）
+        APP_BUNDLE_ID: com.jboth.mine
+        SHARE_BUNDLE_ID: com.jboth.mine.MattermostShare
+        NOTIF_BUNDLE_ID: com.jboth.mine.NotificationService
+        APP_GROUP_ID: group.com.jboth.mine
+        APP_IOS_DEPLOYMENT_TARGET: "15.1"
+
       xcode: 16.4
-      node: 20
-      cocoapods: default
-      # 如果你用 Codemagic Keychain 安装了 Apple Distribution 证书，这里无需额外配置
-      # 如果要用，自行在 UI 设置里关联 Keychain & Provisioning Profiles 即可
-    cache:
-      cache_paths:
-        - $HOME/Library/Caches/CocoaPods
-        - ios/Pods
-        - node_modules
+      cocoapods: 1.15.2
+      node: 20.11.1
+      npm: 10.8.2
+
+      # 缓存能显著加快 pod & npm
+      cache:
+        cache_paths:
+          - $HOME/Library/Caches/CocoaPods
+          - ios/Pods
+          - $CM_BUILD_DIR/node_modules
+          - $HOME/Library/Caches/npm/_cacache
+
     triggering:
       events:
         - push
-        - pull_request
       branch_patterns:
         - pattern: "*"
           include: true
           source: true
 
     scripts:
-      # --- 0) 基础信息 ---
-      - name: Print tool versions
+      # ---- 0) 基础环境可见性 ----
+      - name: Show toolchain versions
         script: |
           set -euo pipefail
           sw_vers
           xcodebuild -version
           ruby -v
+          pod --version
           node -v
           npm -v
-          pod --version
 
-      - name: Fix JS deps to a known-good set
+      # ---- 1) Node 源与 npm 行为：锁定官方源，严格但避免 ci EUSAGE ----
+      - name: NPM registry & config
         script: |
           set -euo pipefail
-
-          # 1) 强制用官方源，避免镜像缺包
           echo "registry=https://registry.npmjs.org/" > .npmrc
           npm config set registry https://registry.npmjs.org/
+          npm config set fund false
+          npm config set audit false
+          npm config set progress false
 
-          # 2) 往 package.json 写 overrides，把几个有问题的版本统一钉死
+      # ---- 2) 修正 package.json：把问题依赖钉到“存在且兼容”的版本 ----
+      # 说明：
+      #  - 我们先改 package.json（overrides + 同步到各依赖段）
+      #  - 再“只生成/刷新 lock”以保证 lock 与 package.json 完全一致
+      #  - 最后执行 npm install（不使用 npm ci，从根上杜绝 EUSAGE）
+      - name: Fix JS deps to known-good set & write lock
+        script: |
+          set -euo pipefail
           node - <<'NODE'
           const fs = require('fs');
           const path = 'package.json';
           const pkg = JSON.parse(fs.readFileSync(path, 'utf8'));
 
+          // 一组“已确认存在”的版本，避免 ETARGET / notarget
           const pins = {
-            "eslint": "8.57.1",            // 与 @typescript-eslint@7 兼容
+            "eslint": "8.57.1",            // 兼容 @typescript-eslint@7
             "yaml": "2.4.5",               // 2.4.1 不存在 → 2.4.5
             "ws": "7.5.9",                 // 7.5.10 不存在 → 7.5.9
             "set-function-length": "1.2.1" // 1.2.2 不存在 → 1.2.1
           };
 
-          pkg.overrides = Object.assign({}, pkg.overrides, pins);
+          // merges to overrides
+          pkg.overrides = Object.assign({}, pkg.overrides || {}, pins);
 
+          // 同步到各依赖段（若本来已声明）
           for (const sect of ["dependencies","devDependencies","optionalDependencies","peerDependencies"]) {
             if (!pkg[sect]) continue;
             for (const k of Object.keys(pins)) {
@@ -83,161 +91,125 @@ workflows:
           console.log('Pinned overrides:', pins);
           NODE
 
-          # 3) 预写 lock（只生成 lock，不执行安装脚本）
-          #    如果工程里还没有 package-lock.json，这一步会创建它
-          npm install --package-lock-only --ignore-scripts --no-audit --fund=false
+          # 只生成/刷新 lock（不安装）
+          npm install --package-lock-only --ignore-scripts --no-audit
 
-          # 4) 容错：老缓存里若还有坏版本号，文本替换一下 lock
+          # 兜底修正（如果历史 lock 中仍遗留了不存在的版本号）
           if [ -f package-lock.json ]; then
             sed -i.bak 's/"yaml": "2\.4\.1"/"yaml": "2.4.5"/g' package-lock.json || true
             sed -i.bak 's/"ws": "7\.5\.10"/"ws": "7.5.9"/g'  package-lock.json || true
             sed -i.bak 's/"set-function-length": "1\.2\.2"/"set-function-length": "1.2.1"/g' package-lock.json || true
           fi
 
-          npm cache verify || true
-
-      - name: Install JS deps (lock-first, then ci)
+      # ---- 3) 安装 JS 依赖（不用 npm ci，避免你之前的 EUSAGE）----
+      - name: Install JS deps (no ci, lock-first)
         script: |
           set -euo pipefail
-          # 若某些 CI 基础镜像老旧导致 lock 仍未生成，再兜底一次
+          # 再保险：确保 lock 存在
           if [ ! -f package-lock.json ]; then
-            npm install --package-lock-only --ignore-scripts --no-audit --fund=false
+            npm install --package-lock-only --ignore-scripts --no-audit
           fi
+          npm install --ignore-scripts --no-audit
 
-          # 按 lock 严格安装
-          npm ci --prefer-offline --no-audit --progress=false
-
-
-      # --- 2) 可选：恢复健康的 pbxproj（如果你仓库里有 .clean 备份）---
-      - name: Optional restore healthy pbxproj if .clean exists
-        script: |
-          set -euo pipefail
-          if [ -f "ios/Mattermost.xcodeproj/project.pbxproj.clean" ]; then
-            echo "Using committed clean pbxproj backup"
-            cp ios/Mattermost.xcodeproj/project.pbxproj.clean ios/Mattermost.xcodeproj/project.pbxproj
-          else
-            echo "No .clean pbxproj provided; continue with current file."
-          fi
-
-      # --- 3) 修复 Podfile：重写 target 'Mattermost'（消除多余 end）---
-      - name: Podfile fix #1 – normalize target 'Mattermost'
+      # ---- 4) CocoaPods：Podfile 预修正（兼容 RN 解析 & 统一 Swift 版本）----
+      - name: Prepare Podfile (safe resolver + Swift unification)
         script: |
           set -euo pipefail
           P=ios/Podfile
           test -f "$P"
-          cp "$P" ios/Podfile.pre_mattermost_fix.bak
 
+          # ①：安全 require（支持 Node hoisting 的解析方式）
           ruby - <<'RUBY'
           path = 'ios/Podfile'
           s = File.read(path)
 
-          canonical_mattermost = <<~'BLOCK'
-          target 'Mattermost' do
-            use_expo_modules!
-            config = use_native_modules!
+          # 如果没定义 node 解析函数，插入一个
+          unless s.include?("def node_require(")
+            inject = <<~'HEAD'
+            def node_require(script)
+              # Resolve script with node to allow for hoisting
+              require Pod::Executable.execute_command('node', ['-p',
+                "require.resolve(
+                  '\#{script}',
+                  {paths: [process.argv[1]]},
+                )", __dir__]).strip
+            end
 
-            use_react_native!(
-              :path => config[:reactNativePath],
-              :app_path => "#{Pod::Config.instance.installation_root}/.."
-            )
+            # --- SAFE Expo autolinking (only if Expo is installed) ---
+            expo_pkg = `node -e "try{console.log(require.resolve('expo/package.json'))}catch(e){}"`.strip
+            if !expo_pkg.empty? && File.exist?(File.join(File.dirname(expo_pkg), "scripts/autolinking.rb"))
+              require File.join(File.dirname(expo_pkg), "scripts/autolinking")
+              $expo_modules_available = true
+            else
+              Pod::UI.puts "Expo not detected; skipping Expo autolinking.".yellow
+              $expo_modules_available = false
+              def use_expo_modules!(*args); end
+            end
 
-            pod 'React-jsi', :path => '../node_modules/react-native/ReactCommon/jsi', :modular_headers => true
-            pod 'React-jsc', :path => '../node_modules/react-native/ReactCommon/jsc', :modular_headers => true
-            pod 'simdjson', :path => '../node_modules/@nozbe/simdjson', :modular_headers => true
-            pod 'CocoaLumberjack', :modular_headers => true
-            pod 'TurboLogIOSNative', :git => 'https://github.com/larkox/react-native-turbo-log-ios-native.git', :tag => '0.2.0', :modular_headers => true
+            node_require('react-native/scripts/react_native_pods.rb')
+            node_require('react-native-permissions/scripts/setup.rb')
+            HEAD
+            s = inject + "\n" + s
           end
-          BLOCK
 
-          # 用非贪婪匹配替换 target 'Mattermost' 块（直到自身 end）
-          s.sub!(/(^\s*target\s+'Mattermost'\s+do\s*\n).*?^\s*end\s*$/m, canonical_mattermost) or
-            raise "Could not find target 'Mattermost' block to replace"
+          # ②：platform 至少 15.1（兼容现有白标），如已存在则不动
+          unless s =~ /^\s*platform\s+:ios,/
+            s = s.sub(/^/, "platform :ios, '15.1'\n")
+          end
 
           File.write(path, s)
-          puts "Rewrote Podfile: normalized target 'Mattermost' block."
+          puts "Podfile base prepared."
           RUBY
 
-          echo "==> peek 35..90"
-          nl -ba ios/Podfile | sed -n '35,90p' || true
-
-      # --- 4) 修复 Podfile：确保仅一个规范 post_install（C++ 设置）---
-      - name: Podfile fix #2 – single canonical post_install (C++ std)
-        script: |
-          set -euo pipefail
-          P=ios/Podfile
-          test -f "$P"
-          cp "$P" ios/Podfile.pre_postinstall_fix.bak
-
+          # ③：注入 pre_install: 统一所有 Pods 的 swift_version=5.9，避免
+          #     "[!] There may only be up to 1 unique SWIFT_VERSION per target" 报错
           ruby - <<'RUBY'
           path = 'ios/Podfile'
           s = File.read(path)
 
-          # 删除所有 post_install 块
-          loop do
-            before = s.dup
-            s = s.sub(/post_install\s+do\s+\|installer\|.*?^\s*end\s*$/m, '')
-            break if s == before
-          end
-
-          canonical = <<~'POST'
-
-            # === Canonical post_install: C++ toolchain settings ===
-            post_install do |installer|
-              # 默认：所有 Pods 统一为 gnu++17
-              installer.pods_project.targets.each do |t|
-                t.build_configurations.each do |cfg|
-                  bs = cfg.build_settings
-                  bs['CLANG_CXX_LANGUAGE_STANDARD'] = 'gnu++17'
-                  bs['CLANG_CXX_LIBRARY'] = 'libc++'
-                  flags = Array(bs['OTHER_CPLUSPLUSFLAGS']).map(&:to_s)
-                  flags.reject! { |f| f.start_with?('-std=') }
-                  flags << '-std=gnu++17'
-                  bs['OTHER_CPLUSPLUSFLAGS'] = flags.uniq
-                end
-              end
-
-              # React-* 目标用 C++20（修复 unordered_map::contains 等）
-              react_cpp_targets = installer.pods_project.targets.select { |t| t.name.start_with?('React-') }
-              react_cpp_targets.each do |t|
-                t.build_configurations.each do |cfg|
-                  bs = cfg.build_settings
-                  bs['CLANG_CXX_LANGUAGE_STANDARD'] = 'gnu++20'
-                  flags = Array(bs['OTHER_CPLUSPLUSFLAGS']).map(&:to_s)
-                  flags.reject! { |f| f.start_with?('-std=') }
-                  flags << '-std=gnu++20'
-                  bs['OTHER_CPLUSPLUSFLAGS'] = flags.uniq
-                  bs['CLANG_CXX_LIBRARY'] = 'libc++'
-                end
-              end
-
-              # secure-pdf-viewer 需要异常/RTTI（ObjC++）
-              spv = installer.pods_project.targets.find { |t| t.name == 'secure-pdf-viewer' }
-              if spv
-                spv.build_configurations.each do |cfg|
-                  bs = cfg.build_settings
-                  bs['GCC_ENABLE_CPP_EXCEPTIONS'] = 'YES'
-                  bs['GCC_ENABLE_CPP_RTTI'] = 'YES'
-                end
+          pre_blk = <<~'PRE'
+          pre_install do |installer|
+            installer.pod_targets.each do |pod|
+              # 强制每个 Pod 的 Swift 版本为 5.9
+              begin
+                pod.swift_version = '5.9'
+              rescue
+                # 某些旧 CocoaPods 可能无此属性，忽略
               end
             end
-          POST
+          end
+          PRE
 
-          s = s.rstrip + "\n\n" + canonical + "\n"
-          File.write(path, s)
-          puts "Wrote single canonical post_install."
+          if s.include?('pre_install do |installer|')
+            # 已存在就不重复注入
+            puts "pre_install present, skip inject."
+          else
+            s << "\n" + pre_blk + "\n"
+            File.write(path, s)
+            puts "Injected pre_install to unify Swift versions."
+          end
           RUBY
 
-          echo "==> peek last lines"
-          tail -n 80 ios/Podfile
-
-      # --- 5) pod install ---
-      - name: Install pods (with repo update)
+      # ---- 5) Pod repo 更新 + 安装 ----
+      - name: Install pods
         script: |
           set -euo pipefail
-          pushd ios >/dev/null
+          cd ios
           pod repo update
-          pod install --repo-update
-          popd >/dev/null
+          # 用 --verbose 便于排错；若你觉得太吵，可移除
+          pod install --verbose
+
+    # 本工作流只需要跑到安装 Pods 成功即可，所以下面不打包
+    # artifacts / publishing 略
+
+      # # --- 5) pod install ---
+      # - name: Install pods (with repo update)
+      #   script: |
+      #     set -euo pipefail
+      #     pushd ios >/dev/null
+      #     pod repo update
+      #     pod install --repo-update
+      #     popd >/dev/null
 
       # --- 6) 注入 Entitlements（App Group + aps-environment=production）---
       - name: Ensure entitlements (App Group & aps)
