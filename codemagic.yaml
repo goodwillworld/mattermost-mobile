@@ -29,23 +29,30 @@ workflows:
       - name: Use Node 20 LTS (via nvm，无 nvm 时自动回退)
         script: |
           set -euo pipefail
-          export NVM_DIR="$HOME/.nvm"
-          if [ -s "$NVM_DIR/nvm.sh" ]; then
-            . "$NVM_DIR/nvm.sh"
-            nvm install 20
-            nvm use 20
-            # 持久化当前 Node 到后续步骤
-            echo 'export NVM_DIR="$HOME/.nvm"' >> $CM_ENV
-            echo '. "$NVM_DIR/nvm.sh" && nvm use 20 >/dev/null' >> $CM_ENV
+
+          PODFILE="ios/Podfile"
+          if [ -f "$PODFILE" ]; then
+            cat > patch_podfile.rb <<'RB'
+          path = "ios/Podfile"
+          s = File.read(path)
+
+          # 仅当是旧写法时才替换
+          if s.include?("require Pod::Executable.execute_command('node', ['-p'")
+            s.gsub!(
+              /require Pod::Executable.execute_command\(\s*'node'.*?\)\s*\]/m,
+              "react_native_pods = Pod::Executable.execute_command(\n  'node',\n  [\n    '-p',\n    <<~'NODE',\n      require.resolve(\n        'react-native/scripts/react_native_pods.rb',\n        { paths: [process.argv[1]] },\n      )\n    NODE,\n    Pod::Config.instance.project_root.to_s\n  ]\n)\nrequire react_native_pods"
+            )
+            File.write(path, s)
+            puts "Patched Podfile resolver to use project_root"
           else
-            echo "nvm not found, fallback to Homebrew node@20"
-            brew update || true
-            brew install node@20 || true
-            # 立刻在当前 shell 生效
-            export PATH="/opt/homebrew/opt/node@20/bin:$PATH"
-            # 持久化到后续步骤（用 CM_ENV，而不是 BASH_ENV）
-            echo 'export PATH="/opt/homebrew/opt/node@20/bin:$PATH"' >> $CM_ENV
+            puts "Podfile resolver already modernized or not matching; skip."
+          end
+          RB
+            ruby patch_podfile.rb
+          else
+            echo "Podfile not found at ios/Podfile"
           fi
+
           node -v
           npm -v || true
           yarn -v || true
