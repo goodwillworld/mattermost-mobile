@@ -13,7 +13,7 @@ workflows:
         SHARE_BUNDLE_ID: "com.jboth.mine.MattermostShare"
         NOTI_BUNDLE_ID: "com.jboth.mine.NotificationService"
         APP_GROUP_ID: "group.com.jboth.mine"
-        TEAM_ID: ""   # 可选：填你的 10 位 Team ID，可强制写入 Xcode 工程
+        TEAM_ID: "866Y22894T"   # 可选：填你的 10 位 Team ID，可强制写入 Xcode 工程
         CI: "true"
       ios_signing:
         # TestFlight 用 app_store；若需 Ad Hoc，把这里与下方 export_options 的 method 同步改成 ad_hoc / ad-hoc
