@@ -49,51 +49,58 @@ workflows:
           npm -v
           pod --version
 
-      - name: Fix JS deps (pin eslint 8 / yaml / ws)
+      - name: Fix JS deps to a known-good set
         script: |
           set -euo pipefail
 
-          # 始终使用官方源，避免镜像缺包
+          # 1) 始终用官方源，避免镜像缺包
+          echo "registry=https://registry.npmjs.org/" > .npmrc
           npm config set registry https://registry.npmjs.org/
 
-          # 用 overrides 统一钉死版本（影响所有间接依赖）
+          # 2) 统一钉住「已发布且兼容」的版本集合（覆盖所有间接依赖）
           node - <<'NODE'
           const fs = require('fs');
-          const p = JSON.parse(fs.readFileSync('package.json','utf8'));
+          const path = 'package.json';
+          const pkg = JSON.parse(fs.readFileSync(path, 'utf8'));
 
-          p.overrides = Object.assign({}, p.overrides, {
-            "eslint": "8.57.1",   // 满足 @typescript-eslint@7 的 peer
-            "yaml":   "2.4.5",    // 2.4.1 不存在
-            "ws":     "7.5.9"     // 7.5.10 不存在，钉到 7.5.9
-          });
+          // 这组版本与 RN 生态/TypeScript-ESLint 7 兼容，且 npm 上实际存在
+          const pins = {
+            "eslint": "8.57.1",           // 与 @typescript-eslint@7 兼容
+            "yaml": "2.4.5",              // 2.4.1 不存在 → 2.4.5
+            "ws": "7.5.9",                // 7.5.10 不存在 → 7.5.9
+            "set-function-length": "1.2.1"// 1.2.2 不存在 → 1.2.1
+          };
 
-          // 顺便把根依赖里同名条目也修到可用版本（若存在）
-          for (const sect of ["dependencies","devDependencies"]) {
-            if (!p[sect]) continue;
-            if (p[sect].eslint) p[sect].eslint = "8.57.1";
-            if (p[sect].yaml   && p[sect].yaml === "2.4.1") p[sect].yaml = "2.4.5";
-            if (p[sect].ws     && p[sect].ws   === "7.5.10") p[sect].ws   = "7.5.9";
+          pkg.overrides = Object.assign({}, pkg.overrides, pins);
+
+          // 若根依赖声明了这些包，也一并修正到上述版本
+          for (const sect of ["dependencies","devDependencies","optionalDependencies","peerDependencies"]) {
+            if (!pkg[sect]) continue;
+            for (const [k,v] of Object.entries(pins)) {
+              if (pkg[sect][k]) pkg[sect][k] = v;
+            }
           }
 
-          fs.writeFileSync('package.json', JSON.stringify(p, null, 2));
-          console.log('overrides pinned: eslint@8.57.1, yaml@2.4.5, ws@7.5.9');
+          fs.writeFileSync(path, JSON.stringify(pkg, null, 2));
+          console.log('Pinned overrides to known-good set:', pins);
           NODE
 
-          # 仅更新 lock，不安装；确保 lock 里把冲突版本替换掉
-          npm i -D eslint@8.57.1 yaml@2.4.5 ws@7.5.9 --package-lock-only
+          # 3) 只更新 lock，不装包；把正确版本写入 lock
+          npm i -D eslint@8.57.1 yaml@2.4.5 ws@7.5.9 set-function-length@1.2.1 --package-lock-only
 
-          # 可选：若历史 lock 中仍残留 7.5.10，强制替换（容错）
-          if grep -q '"ws": "7.5.10"' package-lock.json 2>/dev/null; then
-            sed -i.bak 's/"ws": "7.5.10"/"ws": "7.5.9"/g' package-lock.json || true
+          # 4) 容错：如果 lock 中还残留坏版本（历史缓存导致），强制替换一次
+          if [ -f package-lock.json ]; then
+            sed -i.bak 's/"yaml": "2\.4\.1"/"yaml": "2.4.5"/g' package-lock.json || true
+            sed -i.bak 's/"ws": "7\.5\.10"/"ws": "7.5.9"/g' package-lock.json || true
+            sed -i.bak 's/"set-function-length": "1\.2\.2"/"set-function-length": "1.2.1"/g' package-lock.json || true
           fi
 
           npm cache verify || true
 
-
       - name: Install JS deps
         script: |
           set -euo pipefail
-          # 避免 peer 冲突阻断安装（我们已用 overrides 兜底）
+          # 用 CI 方式安装（严格按 lockfile）
           npm ci --prefer-offline --no-audit --progress=false
 
 
