@@ -132,7 +132,10 @@ workflows:
         script: |
           set -euo pipefail
           cd "$CM_BUILD_DIR/ios"
-          xcode-project use-profiles
+          xcode-project use-profiles \
+            --profile "$MAIN_BUNDLE_ID=jboth_chat" \
+            --profile "$SHARE_BUNDLE_ID=jboth_share" \
+            --profile "$NOTI_BUNDLE_ID=jboth_notification"
 
       - name: Build IPA (App Store export)
         script: |
@@ -143,7 +146,7 @@ workflows:
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0"><dict>
             <key>method</key><string>app-store</string>
-            <key>signingStyle</key><string>automatic</string> <!-- Changed to automatic -->
+            <key>signingStyle</key><string>automatic</string>
             <key>provisioningProfiles</key><dict>
               <key>com.jboth.mine</key><string>jboth_chat</string>
               <key>com.jboth.mine.MattermostShare</key><string>jboth_share</string>
