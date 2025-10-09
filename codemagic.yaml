@@ -53,54 +53,58 @@ workflows:
         script: |
           set -euo pipefail
 
-          # 1) 始终用官方源，避免镜像缺包
+          # 1) 强制用官方源，避免镜像缺包
           echo "registry=https://registry.npmjs.org/" > .npmrc
           npm config set registry https://registry.npmjs.org/
 
-          # 2) 统一钉住「已发布且兼容」的版本集合（覆盖所有间接依赖）
+          # 2) 往 package.json 写 overrides，把几个有问题的版本统一钉死
           node - <<'NODE'
           const fs = require('fs');
           const path = 'package.json';
           const pkg = JSON.parse(fs.readFileSync(path, 'utf8'));
 
-          // 这组版本与 RN 生态/TypeScript-ESLint 7 兼容，且 npm 上实际存在
           const pins = {
-            "eslint": "8.57.1",           // 与 @typescript-eslint@7 兼容
-            "yaml": "2.4.5",              // 2.4.1 不存在 → 2.4.5
-            "ws": "7.5.9",                // 7.5.10 不存在 → 7.5.9
-            "set-function-length": "1.2.1"// 1.2.2 不存在 → 1.2.1
+            "eslint": "8.57.1",            // 与 @typescript-eslint@7 兼容
+            "yaml": "2.4.5",               // 2.4.1 不存在 → 2.4.5
+            "ws": "7.5.9",                 // 7.5.10 不存在 → 7.5.9
+            "set-function-length": "1.2.1" // 1.2.2 不存在 → 1.2.1
           };
 
           pkg.overrides = Object.assign({}, pkg.overrides, pins);
 
-          // 若根依赖声明了这些包，也一并修正到上述版本
           for (const sect of ["dependencies","devDependencies","optionalDependencies","peerDependencies"]) {
             if (!pkg[sect]) continue;
-            for (const [k,v] of Object.entries(pins)) {
-              if (pkg[sect][k]) pkg[sect][k] = v;
+            for (const k of Object.keys(pins)) {
+              if (pkg[sect][k]) pkg[sect][k] = pins[k];
             }
           }
 
           fs.writeFileSync(path, JSON.stringify(pkg, null, 2));
-          console.log('Pinned overrides to known-good set:', pins);
+          console.log('Pinned overrides:', pins);
           NODE
 
-          # 3) 只更新 lock，不装包；把正确版本写入 lock
-          npm i -D eslint@8.57.1 yaml@2.4.5 ws@7.5.9 set-function-length@1.2.1 --package-lock-only
+          # 3) 预写 lock（只生成 lock，不执行安装脚本）
+          #    如果工程里还没有 package-lock.json，这一步会创建它
+          npm install --package-lock-only --ignore-scripts --no-audit --fund=false
 
-          # 4) 容错：如果 lock 中还残留坏版本（历史缓存导致），强制替换一次
+          # 4) 容错：老缓存里若还有坏版本号，文本替换一下 lock
           if [ -f package-lock.json ]; then
             sed -i.bak 's/"yaml": "2\.4\.1"/"yaml": "2.4.5"/g' package-lock.json || true
-            sed -i.bak 's/"ws": "7\.5\.10"/"ws": "7.5.9"/g' package-lock.json || true
+            sed -i.bak 's/"ws": "7\.5\.10"/"ws": "7.5.9"/g'  package-lock.json || true
             sed -i.bak 's/"set-function-length": "1\.2\.2"/"set-function-length": "1.2.1"/g' package-lock.json || true
           fi
 
           npm cache verify || true
 
-      - name: Install JS deps
+      - name: Install JS deps (lock-first, then ci)
         script: |
           set -euo pipefail
-          # 用 CI 方式安装（严格按 lockfile）
+          # 若某些 CI 基础镜像老旧导致 lock 仍未生成，再兜底一次
+          if [ ! -f package-lock.json ]; then
+            npm install --package-lock-only --ignore-scripts --no-audit --fund=false
+          fi
+
+          # 按 lock 严格安装
           npm ci --prefer-offline --no-audit --progress=false
 
 
