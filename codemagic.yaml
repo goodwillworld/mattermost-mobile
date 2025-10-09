@@ -13,20 +13,9 @@ workflows:
         NOTI_BUNDLE_ID:  "com.jboth.mine.NotificationService"
         APP_GROUP_ID: "group.com.jboth.mine"
         CI: "true"  # 跳过部分 RN 检查
-        MAIN_PROFILE_UUID: "YOUR_MAIN_UUID"  # 从本地提取，e.g., 8GVTYCAZTU-...
-        SHARE_PROFILE_UUID: "YOUR_SHARE_UUID"  # e.g., 8SF3HMCDBH-...
-        NOTI_PROFILE_UUID: "YOUR_NOTI_UUID"  # e.g., 2P7BZN4KYD-...
-      # 建议把以下三项设置为加密环境变量（在 Codemagic UI 中配置）
-      # APP_STORE_CONNECT_PRIVATE_KEY: |
-      # APP_STORE_CONNECT_KEY_ID: UZ33M397NY
-      # APP_STORE_CONNECT_ISSUER_ID: 26e601c9-c2f0-497a-a9e1-39a426cecf9a
       ios_signing:
-        certificates:
-          - DistributionCert  # UI 上传的证书名称
-        provisioning_profiles:  # 名称匹配 UI
-          - jboth_chat
-          - jboth_share
-          - jboth_notification
+        distribution_type: app_store  # 自动签名
+        bundle_identifier: com.jboth.mine  # 主 Bundle ID，自动匹配扩展
 
     cache:
       cache_paths:
@@ -180,11 +169,19 @@ workflows:
           pod repo update
           pod install
 
-      - name: Initialize keychain and import UI signing files
+      - name: Fetch signing files (App Store) & import certs
         script: |
           set -euo pipefail
           keychain initialize
-          # 导入 UI 证书和 Profiles 到密钥链（Codemagic 自动处理，无需 API）
+          test -n "${APP_STORE_CONNECT_ISSUER_ID:-}" || { echo "MISS ISSUER_ID"; exit 1; }
+          test -n "${APP_STORE_CONNECT_KEY_IDENTIFIER:-}"   || { echo "MISS KEY_IDENTIFIER"; exit 1; }
+          test -n "${APP_STORE_CONNECT_PRIVATE_KEY:-}" || { echo "MISS PRIVATE_KEY"; exit 1; }
+          echo "ASC credentials present."
+
+          app-store-connect fetch-signing-files "$MAIN_BUNDLE_ID" --type IOS_APP_STORE --create
+          app-store-connect fetch-signing-files "$SHARE_BUNDLE_ID" --type IOS_APP_STORE --create
+          app-store-connect fetch-signing-files "$NOTI_BUNDLE_ID"  --type IOS_APP_STORE --create
+
           keychain add-certificates
 
       - name: Show signing files
@@ -192,7 +189,7 @@ workflows:
           set -euo pipefail
           echo "=== Keychain identities ==="
           security find-identity -v -p codesigning /Users/builder/Library/Keychains/login.keychain-db || true
-          echo "=== Provisioning Profiles ==="
+          echo "=== Provisioning Profiles ===="
           ls -la "/Users/builder/Library/MobileDevice/Provisioning Profiles"/*.mobileprovision 2>/dev/null || echo "No .mobileprovision"
           ls -la "/Users/builder/Library/MobileDevice/Provisioning Profiles"/*.provisionprofile 2>/dev/null || echo "No .provisionprofile"
 
@@ -212,11 +209,6 @@ workflows:
           <plist version="1.0"><dict>
             <key>method</key><string>app-store</string>
             <key>signingStyle</key><string>manual</string>
-            <key>provisioningProfiles</key><dict>
-              <key>com.jboth.mine</key><string>jboth_chat</string>
-              <key>com.jboth.mine.MattermostShare</key><string>jboth_share</string>
-              <key>com.jboth.mine.NotificationService</key><string>jboth_notification</string>
-            </dict>
             <key>uploadSymbols</key><true/>
             <key>compileBitcode</key><false/>
           </dict></plist>
