@@ -13,11 +13,10 @@ workflows:
         SHARE_BUNDLE_ID: "com.jboth.mine.MattermostShare"
         NOTI_BUNDLE_ID: "com.jboth.mine.NotificationService"
         APP_GROUP_ID: "group.com.jboth.mine"
-        TEAM_ID: "866Y22894T"    # 如不想强制写入，可留空 ""
+        TEAM_ID: "866Y22894T"   # 可留空""；填写则强制覆盖 DEVELOPMENT_TEAM
         CI: "true"
       ios_signing:
-        # TestFlight 用 app_store；若需 Ad Hoc，请把这里与下方导出 method 一起改为 ad_hoc / ad-hoc
-        distribution_type: app_store
+        distribution_type: app_store        # 如需 Ad Hoc，将此处与下方 export_options 一起改为 ad_hoc/ad-hoc
         bundle_identifier: com.jboth.mine
 
     scripts:
@@ -73,7 +72,7 @@ workflows:
         script: |
           set -euo pipefail
           test -f scripts/setup_signing.sh
-          # 从出现“Resolving provisioning profiles”那行开始到文件末尾全部删除
+          # 从出现“Resolving provisioning profiles”那一行开始到文件末尾删除（避免脚本过早查找 profiles）
           awk '/Resolving provisioning profiles/ {exit} {print}' \
             scripts/setup_signing.sh > scripts/setup_signing_trimmed.sh
           mv scripts/setup_signing_trimmed.sh scripts/setup_signing.sh
@@ -96,14 +95,8 @@ workflows:
       - name: Apply provisioning profiles to Xcode project
         script: |
           set -e
-          # 仅作用于主工程，避免 node_modules 的子工程被误改
+          # 这一步会把你在 Codemagic UI 上传/同步的 profiles 安装到 runner，并写入工程签名键
           xcode-project use-profiles --project ios/Mattermost.xcodeproj
-
-      - name: List installed provisioning profiles
-        script: |
-          set -e
-          echo "==> Profiles in runner:"
-          ls -l "$HOME/Library/MobileDevice/Provisioning Profiles" || true
 
       - name: Inspect installed provisioning profiles (verbose)
         script: |
@@ -115,15 +108,12 @@ workflows:
           for f in "$PDIR"/*.mobileprovision "$PDIR"/*.provisionprofile; do
             echo "----- $f -----"
             /usr/bin/security cms -D -i "$f" > /tmp/p.plist || { echo "  failed to decode"; continue; }
-            /usr/bin/plutil -p /tmp/p.plist | head -n 5 || true
             echo "Name:  $(/usr/bin/plutil -extract Name raw -o - /tmp/p.plist 2>/dev/null || true)"
             echo "UUID:  $(/usr/bin/plutil -extract UUID raw -o - /tmp/p.plist 2>/dev/null || true)"
             echo "AppID: $(/usr/bin/plutil -extract Entitlements.application-identifier raw -o - /tmp/p.plist 2>/dev/null || true)"
             echo -n "Has App Groups: "
             if /usr/libexec/PlistBuddy -c "Print :Entitlements:com.apple.security.application-groups" /tmp/p.plist >/dev/null 2>&1; then
               echo "yes"
-              echo "Groups:"
-              /usr/libexec/PlistBuddy -c "Print :Entitlements:com.apple.security.application-groups" /tmp/p.plist 2>/dev/null || true
             else
               echo "no"
             fi
@@ -131,8 +121,7 @@ workflows:
             /usr/bin/plutil -extract Entitlements.aps-environment raw -o - /tmp/p.plist 2>/dev/null || echo "(none)"
           done
 
-
-      - name: Run apply_profiles.sh (from repo)
+      - name: Run apply_profiles.sh (safe update only)
         script: |
           set -euo pipefail
           if [ ! -x scripts/apply_profiles.sh ]; then
@@ -140,33 +129,6 @@ workflows:
             exit 1
           fi
           bash scripts/apply_profiles.sh
-
-      - name: Show build signing for each target
-        script: |
-          set -e
-          for T in Mattermost MattermostShare NotificationService; do
-            echo "---- $T ----"
-            xcodebuild -workspace ios/Mattermost.xcworkspace -scheme Mattermost -showBuildSettings \
-              | grep -E "PRODUCT_BUNDLE_IDENTIFIER|PROVISIONING_PROFILE_SPECIFIER|DEVELOPMENT_TEAM|CODE_SIGN_ENTITLEMENTS" -n \
-              | sed -E "s/^/$T: /" || true
-          done
-
-      - name: Generate export options (App Store)
-        script: |
-          set -e
-          # 若需 Ad Hoc：把 method 改成 ad-hoc，并与 environment.ios_signing.distribution_type 同步为 ad_hoc
-          cat > export_options.plist <<'EOF'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>method</key><string>app-store</string>
-            <key>signingStyle</key><string>manual</string>
-            <key>destination</key><string>export</string>
-            <key>compileBitcode</key><false/>
-          </dict>
-          </plist>
-          EOF
 
       - name: Dump signing keys per target (Release + iphoneos)
         script: |
@@ -180,11 +142,26 @@ workflows:
               -showBuildSettings \
               | awk -v t="$T" '
                   /Build settings for action build and target/ {p = index($0, t)>0}
-                  p && /(PRODUCT_BUNDLE_IDENTIFIER|CODE_SIGN_ENTITLEMENTS|DEVELOPMENT_TEAM|CODE_SIGN_STYLE|CODE_SIGN_IDENTITY|PROVISIONING_PROFILE_SPECIFIER(\[sdk=iphoneos\*\])?|PROVISIONING_PROFILE(\[sdk=iphoneos\*\])?)/ {print}
+                  p && /(PRODUCT_BUNDLE_IDENTIFIER|CODE_SIGN_ENTITLEMENTS|DEVELOPMENT_TEAM|CODE_SIGN_STYLE|CODE_SIGN_IDENTITY(\[sdk=iphoneos\*\])?|PROVISIONING_PROFILE_SPECIFIER(\[sdk=iphoneos\*\])?|PROVISIONING_PROFILE(\[sdk=iphoneos\*\])?)/ {print}
                 ' \
               | sed -E "s/^/$T: /" || true
           done
 
+      - name: Generate export options (App Store)
+        script: |
+          set -e
+          cat > export_options.plist <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>method</key><string>app-store</string>
+  <key>signingStyle</key><string>manual</string>
+  <key>destination</key><string>export</string>
+  <key>compileBitcode</key><false/>
+</dict>
+</plist>
+EOF
 
       - name: Build archive
         script: |
@@ -193,8 +170,10 @@ workflows:
           xcodebuild -workspace Mattermost.xcworkspace \
             -scheme Mattermost \
             -configuration Release \
+            -sdk iphoneos \
             -archivePath build/ios/xcarchive/Mattermost.xcarchive \
             CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM="${TEAM_ID}" \
             COMPILER_INDEX_STORE_ENABLE=NO \
             archive | xcpretty && exit ${PIPESTATUS[0]}
 
