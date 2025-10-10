@@ -8,7 +8,7 @@ workflows:
       groups:
         - ios_match
       vars:
-        APP_NAME: " guardar"
+        APP_NAME: "Mattermost"
         MAIN_BUNDLE_ID: "com.jboth.mine"
         SHARE_BUNDLE_ID: "com.jboth.mine.MattermostShare"
         NOTI_BUNDLE_ID: "com.jboth.mine.NotificationService"
@@ -58,8 +58,8 @@ workflows:
           set -euo pipefail
           PODFILE="ios/Podfile"
           if [ -f "$PODFILE" ]; then
-            if grep -q "require Pod::Executable.execute_command('node', $$ '-p'" "$PODFILE"; then
-              perl -0777 -i -pe "s/require Pod::Executable.execute_command\(\s*'node'.*?\)\s* $$/react_native_pods = Pod::Executable.execute_command(\n  'node',\n  [\n    '-p',\n    <<~'NODE',\n      require.resolve(\n        'react-native\/scripts\/react_native_pods.rb',\n        { paths: [process.argv[1]] },\n      )\n    NODE,\n    Pod::Config.instance.project_root.to_s\n  ]\n)\nrequire react_native_pods/s" "$PODFILE"
+            if grep -q "require Pod::Executable.execute_command('node', \['-p'" "$PODFILE"; then
+              perl -0777 -i -pe "s/require Pod::Executable.execute_command\(\s*'node'.*?\)\s*\]/react_native_pods = Pod::Executable.execute_command(\n  'node',\n  [\n    '-p',\n    <<~'NODE',\n      require.resolve(\n        'react-native\/scripts\/react_native_pods.rb',\n        { paths: [process.argv[1]] },\n      )\n    NODE,\n    Pod::Config.instance.project_root.to_s\n  ]\n)\nrequire react_native_pods/s" "$PODFILE"
               echo "修补Podfile解析器以使用project_root"
             else
               echo "Podfile解析器已现代化或不匹配，跳过。"
@@ -68,13 +68,16 @@ workflows:
             echo "在ios/Podfile未找到Podfile"
           fi
 
-      - name: "清理Pods缓存"
+      - name: "清理Pods缓存并确保Yoga依赖"
         script: |
           set -e
           cd ios
           pod cache clean --all
           rm -rf Pods
           rm -f Podfile.lock
+          sed -i '' '/pod "React-Core"/a pod "Yoga", :path => "../node_modules/react-native/ReactCommon/yoga"' Podfile
+          pod install --repo-update
+          echo "已清理Pods缓存并确保Yoga依赖"
 
       - name: "更新Alamofire到最新版本"
         script: |
@@ -82,35 +85,6 @@ workflows:
           cd ios
           sed -i '' 's/pod "Alamofire".*/pod "Alamofire", "~> 5.9.0"/' Podfile
           pod install --repo-update
-
-      - name: "修补Pods项目以支持Swift并发"
-        script: |
-          set -euo pipefail
-          if ! ruby -e "require 'xcodeproj'" 2>/dev/null; then
-            gem install xcodeproj --no-document
-            export GEM_HOME="$HOME/.gem"
-            export PATH="$HOME/.gem/bin:$PATH"
-            echo 'export GEM_HOME="$HOME/.gem"' >> $CM_ENV
-            echo 'export PATH="$HOME/.gem/bin:$PATH"' >> $CM_ENV
-          fi
-
-          ruby - <<'RB'
-            require 'xcodeproj'
-            proj = Xcodeproj::Project.open('ios/Pods/Pods.xcodeproj')
-            proj.targets.each do |t|
-              next unless t.name == 'Alamofire'
-              t.build_configurations.each do |cfg|
-                bs = cfg.build_settings
-                bs['SWIFT_STRICT_CONCURRENCY'] = 'minimal'
-                bs['SWIFT_VERSION'] = '5.9'
-                if bs['IPHONEOS_DEPLOYMENT_TARGET'].to_s < '16.0'
-                  bs['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'
-                end
-              end
-            end
-            proj.save
-            puts "已更新Pods项目中的Alamofire：SWIFT_STRICT_CONCURRENCY=minimal, SWIFT_VERSION=5.9, IPHONEOS_DEPLOYMENT_TARGET=16.0"
-          RB
 
       - name: "修补Alamofire EventMonitor.swift（备用）"
         script: |
@@ -133,6 +107,52 @@ workflows:
           else
             echo "未找到Alamofire SessionDelegate.swift，跳过修补"
           fi
+
+      - name: "修补SecurePDFViewerManager.h以修复NS_ASSUME_NONNULL问题"
+        script: |
+          set -euo pipefail
+          FILE="libraries/@mattermost/secure-pdf-viewer/ios/SecurePDFViewerManager.h"
+          if [ -f "$FILE" ]; then
+            sed -i '' '/NS_ASSUME_NONNULL_BEGIN/{N;s/NS_ASSUME_NONNULL_BEGIN\n#import/#import\nNS_ASSUME_NONNULL_BEGIN/}' "$FILE"
+            echo "已修补SecurePDFViewerManager.h，将#import移到NS_ASSUME_NONNULL_BEGIN之前"
+          else
+            echo "未找到SecurePDFViewerManager.h，跳过修补"
+          fi
+
+      - name: "修补Pods项目以支持Swift并发和Yoga头文件路径"
+        script: |
+          set -euo pipefail
+          if ! ruby -e "require 'xcodeproj'" 2>/dev/null; then
+            gem install xcodeproj --no-document
+            export GEM_HOME="$HOME/.gem"
+            export PATH="$HOME/.gem/bin:$PATH"
+            echo 'export GEM_HOME="$HOME/.gem"' >> $CM_ENV
+            echo 'export PATH="$HOME/.gem/bin:$PATH"' >> $CM_ENV
+          fi
+
+          ruby - <<'RB'
+            require 'xcodeproj'
+            proj = Xcodeproj::Project.open('ios/Pods/Pods.xcodeproj')
+            proj.targets.each do |t|
+              next unless ['Alamofire', 'secure-pdf-viewer'].include?(t.name)
+              t.build_configurations.each do |cfg|
+                bs = cfg.build_settings
+                bs['SWIFT_STRICT_CONCURRENCY'] = 'minimal'
+                bs['SWIFT_VERSION'] = '5.9'
+                if bs['IPHONEOS_DEPLOYMENT_TARGET'].to_s < '16.0'
+                  bs['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'
+                end
+                if t.name == 'secure-pdf-viewer'
+                  headers = bs['HEADER_SEARCH_PATHS'] || []
+                  headers = [headers] unless headers.is_a?(Array)
+                  headers << '"$(PODS_ROOT)/Yoga/yoga"'
+                  bs['HEADER_SEARCH_PATHS'] = headers.uniq
+                end
+              end
+            end
+            proj.save
+            puts "已更新Pods项目：Alamofire和secure-pdf-viewer的SWIFT_STRICT_CONCURRENCY=minimal, SWIFT_VERSION=5.9, IPHONEOS_DEPLOYMENT_TARGET=16.0，并为secure-pdf-viewer添加Yoga头文件路径"
+          RB
 
       - name: "项目：设置iOS 16 + Swift 5.9 + 严格并发=minimal（Release）"
         script: |
@@ -225,7 +245,6 @@ workflows:
           ruby - <<'RB'
             require 'xcodeproj'
             proj = Xcodeproj::Project.open('ios/Mattermost.xcodeproj')
-
             proj.build_configurations.each do |cfg|
               bs = cfg.build_settings
               bs['SWIFT_VERSION'] = '5.9'
@@ -234,8 +253,7 @@ workflows:
               end
               bs['SWIFT_STRICT_CONCURRENCY'] = 'minimal'
             end
-
-            targets = ['Mattermost','MattermostShare','NotificationService']
+            targets = ['Mattermost', 'MattermostShare', 'NotificationService']
             proj.targets.each do |t|
               next unless targets.include?(t.name)
               t.build_configurations.each do |cfg|
@@ -247,7 +265,6 @@ workflows:
                 bs['SWIFT_STRICT_CONCURRENCY'] = 'minimal'
               end
             end
-
             proj.save
             puts "已统一所有构建配置的Swift/iOS/并发设置。"
           RB
@@ -259,48 +276,43 @@ workflows:
           set -euo pipefail
           P=ios/Podfile
           test -f "$P"
-
           ruby - <<'RUBY'
-          path = 'ios/Podfile'
-          s = File.read(path)
-
-          inject = <<~'INJECT'
-            # === RN C++ pods需要C++20以支持std::unordered_map::contains等 ===
-            react_cpp20_targets = installer.pods_project.targets.select { |t|
-              t.name.start_with?('React-') ||
-              t.name == 'React-perflogger' || t.name == 'React-Fabric' || t.name == 'React-FabricComponents'
-            }
-
-            react_cpp20_targets.each do |t|
-              t.build_configurations.each do |cfg|
-                bs = cfg.build_settings
-                bs['CLANG_CXX_LANGUAGE_STANDARD'] = 'gnu++20'
-                flags = Array(bs['OTHER_CPLUSPLUSFLAGS']).map(&:to_s)
-                if flags.any? { |f| f.include?('-std=gnu++17') }
-                  flags = flags.map { |f| f.include?('-std=gnu++17') ? '-std=gnu++20' : f }
-                else
-                  flags << '-std=gnu++20'
+            path = 'ios/Podfile'
+            s = File.read(path)
+            inject = <<~'INJECT'
+              # === RN C++ pods需要C++20以支持std::unordered_map::contains等 ===
+              react_cpp20_targets = installer.pods_project.targets.select { |t|
+                t.name.start_with?('React-') ||
+                t.name == 'React-perflogger' || t.name == 'React-Fabric' || t.name == 'React-FabricComponents' || t.name == 'secure-pdf-viewer'
+              }
+              react_cpp20_targets.each do |t|
+                t.build_configurations.each do |cfg|
+                  bs = cfg.build_settings
+                  bs['CLANG_CXX_LANGUAGE_STANDARD'] = 'gnu++20'
+                  flags = Array(bs['OTHER_CPLUSPLUSFLAGS']).map(&:to_s)
+                  if flags.any? { |f| f.include?('-std=gnu++17') }
+                    flags = flags.map { |f| f.include?('-std=gnu++17') ? '-std=gnu++20' : f }
+                  else
+                    flags << '-std=gnu++20'
+                  end
+                  bs['OTHER_CPLUSPLUSFLAGS'] = flags.uniq
+                  bs['CLANG_CXX_LIBRARY'] = 'libc++'
                 end
-                bs['OTHER_CPLUSPLUSFLAGS'] = flags.uniq
-                bs['CLANG_CXX_LIBRARY'] = 'libc++'
               end
+            INJECT
+            if s =~ /post_install do \|installer\|/m
+              s = s.gsub(/post_install do \|installer\|.*?end/m) do |blk|
+                blk.include?('react_cpp20_targets') ? blk : blk.sub(/end\s*\z/, inject + "\nend")
+              end
+            else
+              s << <<~POST
+                post_install do |installer|
+                #{inject}
+                end
+              POST
             end
-          INJECT
-
-          if s =~ /post_install do \|installer\|/m
-            s = s.gsub(/post_install do \|installer\|.*?end/m) do |blk|
-              blk.include?('react_cpp20_targets') ? blk : blk.sub(/end\s*\z/, inject + "\nend")
-            end
-          else
-            s << <<~POST
-            post_install do |installer|
-            #{inject}
-            end
-            POST
-          end
-
-          File.write(path, s)
-          puts "Podfile post_install更新：React* pods使用gnu++20。"
+            File.write(path, s)
+            puts "Podfile post_install更新：React*和secure-pdf-viewer pods使用gnu++20。"
           RUBY
 
       - name: "安装Pods"
@@ -310,7 +322,7 @@ workflows:
           pod repo update || true
           pod install --repo-update
 
-      - name: "ascended"
+      - name: "诊断Pods：详细构建secure-pdf-viewer目标"
         script: |
           set -euo pipefail
           xcodebuild -project ios/Pods/Pods.xcodeproj \
@@ -318,6 +330,7 @@ workflows:
             -configuration Release \
             -sdk iphoneos \
             build \
+            HEADER_SEARCH_PATHS="$HEADER_SEARCH_PATHS $(PODS_ROOT)/Yoga/yoga" \
             | tee secure-pdf-viewer-build.log
 
       - name: "验证已安装的签名配置文件（只读）"
@@ -357,33 +370,28 @@ workflows:
           ruby - <<'RB'
             require 'xcodeproj'
             proj = Xcodeproj::Project.open('ios/Mattermost.xcodeproj')
-
-            TEAM  = ENV.fetch('TEAM_ID', '')
+            TEAM = ENV.fetch('TEAM_ID', '')
             raise "TEAM_ID为空" if TEAM.nil? || TEAM.empty?
-
             targets = {
               'Mattermost'          => { bundle: ENV['MAIN_BUNDLE_ID']  || 'com.jboth.mine',                     profile: 'jboth_chat' },
               'MattermostShare'     => { bundle: ENV['SHARE_BUNDLE_ID'] || 'com.jboth.mine.MattermostShare',     profile: 'jboth_share' },
               'NotificationService' => { bundle: ENV['NOTI_BUNDLE_ID']  || 'com.jboth.mine.NotificationService', profile: 'jboth_notification' },
             }
-
             proj.targets.each do |t|
               next unless targets.key?(t.name)
               spec = targets[t.name]
-
               t.build_configurations.each do |cfg|
                 next unless cfg.name == 'Release'
                 bs = cfg.build_settings
                 bs['PRODUCT_BUNDLE_IDENTIFIER'] = spec[:bundle]
-                bs['DEVELOPMENT_TEAM']          = TEAM
-                bs['CODE_SIGN_STYLE']           = 'Manual'
-                bs['CODE_SIGN_IDENTITY[sdk=iphoneos*]']            = 'Apple Distribution'
+                bs['DEVELOPMENT_TEAM'] = TEAM
+                bs['CODE_SIGN_STYLE'] = 'Manual'
+                bs['CODE_SIGN_IDENTITY[sdk=iphoneos*]'] = 'Apple Distribution'
                 bs['PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]'] = spec[:profile]
                 bs.delete('PROVISIONING_PROFILE')
                 bs.delete('CODE_SIGN_IDENTITY')
               end
             end
-
             proj.save
             puts "签名设置已安全更新。"
           RB
@@ -404,7 +412,7 @@ workflows:
               -configuration Release \
               -sdk iphoneos \
               -showBuildSettings \
-              | egrep "(PRODUCT_BUNDLE_IDENTIFIER|CODE_SIGN_ENTITLEMENTS|DEVELOPMENT_TEAM|CODE_SIGN_STYLE|CODE_SIGN_IDENTITY$$ sdk=iphoneos\* $$|PROVISIONING_PROFILE_SPECIFIER$$ sdk=iphoneos\* $$)" \
+              | egrep "(PRODUCT_BUNDLE_IDENTIFIER|CODE_SIGN_ENTITLEMENTS|DEVELOPMENT_TEAM|CODE_SIGN_STYLE|CODE_SIGN_IDENTITY\[sdk=iphoneos\*\]|PROVISIONING_PROFILE_SPECIFIER\[sdk=iphoneos\*\])" \
               || true
           done
 
@@ -421,6 +429,7 @@ workflows:
             DEVELOPMENT_TEAM="${TEAM_ID}" \
             COMPILER_INDEX_STORE_ENABLE=NO \
             SWIFT_STRICT_CONCURRENCY=minimal \
+            HEADER_SEARCH_PATHS="$HEADER_SEARCH_PATHS $(PODS_ROOT)/Yoga/yoga" \
             archive | xcpretty && exit ${PIPESTATUS[0]}
 
       - name: "生成导出选项（App Store）"
