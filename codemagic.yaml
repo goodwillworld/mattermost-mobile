@@ -146,8 +146,12 @@ workflows:
           set -euo pipefail
           FILE="libraries/@mattermost/secure-pdf-viewer/ios/SecurePDFViewerManager.h"
           if [ -f "$FILE" ]; then
-            sed -i '' '/NS_ASSUME_NONNULL_BEGIN/{N;s/NS_ASSUME_NONNULL_BEGIN\n#import/#import\nNS_ASSUME_NONNULL_BEGIN/}' "$FILE"
+            echo "SecurePDFViewerManager.h内容（修补前）："
+            cat "$FILE"
+            perl -0777 -i -pe 's/NS_ASSUME_NONNULL_BEGIN\n#import/#import\nNS_ASSUME_NONNULL_BEGIN/' "$FILE"
             echo "已修补SecurePDFViewerManager.h，将#import移到NS_ASSUME_NONNULL_BEGIN之前"
+            echo "SecurePDFViewerManager.h内容（修补后）："
+            cat "$FILE"
           else
             echo "未找到SecurePDFViewerManager.h，跳过修补"
           fi
