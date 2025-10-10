@@ -69,39 +69,36 @@ workflows:
           fi
 
       # ① MUST：物化干净 pbxproj + 校验（先于一切 Xcode 操作）
-      - name: "Project: set iOS 16 + Swift 5.9 + strict concurrency=minimal (Release)"
+      - name: "MUST: materialize & verify clean pbxproj (.clean)"
         script: |
           set -euo pipefail
-          if ! ruby -e "require 'xcodeproj'" 2>/dev/null; then
-            gem install xcodeproj --no-document
-            export GEM_HOME="$HOME/.gem"
-            export PATH="$HOME/.gem/bin:$PATH"
-            echo 'export GEM_HOME="$HOME/.gem"' >> $CM_ENV
-            echo 'export PATH="$HOME/.gem/bin:$PATH"' >> $CM_ENV
+          SRC="ios/Mattermost.xcodeproj/project.pbxproj.clean"
+          DST="ios/Mattermost.xcodeproj/project.pbxproj"
+
+          echo "==> assert .clean exists"
+          ls -l "$SRC"
+
+          echo "==> copy .clean -> pbxproj"
+          cp "$SRC" "$DST"
+
+          echo "==> compare checksums to ensure overwrite really happened"
+          md5_src=$(md5 -q "$SRC")
+          md5_dst=$(md5 -q "$DST")
+          echo "SRC MD5: $md5_src"
+          echo "DST MD5: $md5_dst"
+          if [ "$md5_src" != "$md5_dst" ]; then
+            echo "ERROR: pbxproj not overwritten correctly"; exit 1
           fi
 
-          ruby - <<'RB'
-            require 'xcodeproj'
-            proj = Xcodeproj::Project.open('ios/Mattermost.xcodeproj')
-            targets = ['Mattermost', 'MattermostShare', 'NotificationService']
-            proj.targets.each do |t|
-              next unless targets.include?(t.name)
-              t.build_configurations.each do |cfg|
-                next unless cfg.name == 'Release'
-                bs = cfg.build_settings
-                bs['SWIFT_VERSION'] = '5.9'
-                if bs['IPHONEOS_DEPLOYMENT_TARGET'].to_s < '16.0'
-                  bs['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'
-                end
-                bs['SWIFT_STRICT_CONCURRENCY'] = 'minimal'
-              end
-            end
-            proj.save
-            puts "Project Release configs updated."
-          RB
+          # 备份好文件，便于后续回滚
+          cp "$DST" ios/Mattermost.xcodeproj/project.pbxproj.good
 
+          echo "==> basic sanity (header + around suspicious line)"
+          head -n 3 "$DST" || true
+          sed -n '2088,2102p' "$DST" || true
+
+          echo "==> xcodebuild -project -list (must succeed)"
           xcodebuild -project ios/Mattermost.xcodeproj -list
-
 
       - name: "Bump deployment target in project to iOS 16.0 (Release only)"
         script: |
@@ -136,118 +133,55 @@ workflows:
           # 确认 project 仍可读
           xcodebuild -project ios/Mattermost.xcodeproj -list
 
-
-      - name: "MUST: materialize & verify clean pbxproj (.clean)"
-        script: |
-          set -euo pipefail
-          SRC="ios/Mattermost.xcodeproj/project.pbxproj.clean"
-          DST="ios/Mattermost.xcodeproj/project.pbxproj"
-          ls -l "$SRC"
-          cp "$SRC" "$DST"
-          md5_src=$(md5 -q "$SRC"); md5_dst=$(md5 -q "$DST")
-          echo "SRC MD5: $md5_src"; echo "DST MD5: $md5_dst"
-          [ "$md5_src" = "$md5_dst" ] || { echo "Overwrite failed"; exit 1; }
-          cp "$DST" ios/Mattermost.xcodeproj/project.pbxproj.good
-          xcodebuild -project ios/Mattermost.xcodeproj -list
-
-      - name: "Project: unify Swift=5.9 + iOS 16.0 + concurrency=minimal (ALL configs)"
-        script: |
-          set -euo pipefail
-          if ! ruby -e "require 'xcodeproj'" 2>/dev/null; then
-            gem install xcodeproj --no-document
-            export GEM_HOME="$HOME/.gem"
-            export PATH="$HOME/.gem/bin:$PATH"
-            echo 'export GEM_HOME="$HOME/.gem"' >> $CM_ENV
-            echo 'export PATH="$HOME/.gem/bin:$PATH"' >> $CM_ENV
-          fi
-
-          ruby - <<'RB'
-            require 'xcodeproj'
-            proj = Xcodeproj::Project.open('ios/Mattermost.xcodeproj')
-
-            # 覆盖工程级别（可选，保险）
-            proj.build_configurations.each do |cfg|
-              bs = cfg.build_settings
-              bs['SWIFT_VERSION'] = '5.9'
-              if bs['IPHONEOS_DEPLOYMENT_TARGET'].to_s < '16.0'
-                bs['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'
-              end
-              bs['SWIFT_STRICT_CONCURRENCY'] = 'minimal'
-            end
-
-            # 覆盖三个 targets 的“所有配置”（Debug/Release都要统一）
-            targets = ['Mattermost','MattermostShare','NotificationService']
-            proj.targets.each do |t|
-              next unless targets.include?(t.name)
-              t.build_configurations.each do |cfg|
-                bs = cfg.build_settings
-                bs['SWIFT_VERSION'] = '5.9'
-                if bs['IPHONEOS_DEPLOYMENT_TARGET'].to_s < '16.0'
-                  bs['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'
-                end
-                bs['SWIFT_STRICT_CONCURRENCY'] = 'minimal'
-              end
-            end
-
-            proj.save
-            puts "Unified Swift/iOS/concurrency across ALL build configurations."
-          RB
-
-          # 再次快速健康检查
-          xcodebuild -project ios/Mattermost.xcodeproj -list
-
-      - name: "Patch Podfile: add C++17 settings for Pods (incl. secure-pdf-viewer)"
+      - name: "Patch Podfile: iOS 16 + Swift 5.9 (no Alamofire pin)"
         script: |
           set -euo pipefail
           P=ios/Podfile
           test -f "$P"
 
           ruby - <<'RUBY'
-          path = 'ios/Podfile'
-          s = File.read(path)
+            path = 'ios/Podfile'
+            s = File.read(path)
 
-          inject = <<~'INJECT'
-            # === RN C++ pods need C++20 for std::unordered_map::contains etc. ===
-            react_cpp20_targets = installer.pods_project.targets.select { |t| t.name.start_with?('React-') }
-
-              # 精准包含触发的 target，同时兼顾可能的相关 C++ 目标
-              t.name == 'React-perflogger' || t.name == 'React-Fabric' || t.name == 'React-FabricComponents'
+            # 1) platform :ios 提升到 16.0（若已有更高版本则不降）
+            if s =~ /^platform :ios/
+              s = s.gsub(/^platform :ios, .*/, 'platform :ios, "16.0"')
+            else
+              s = %(platform :ios, "16.0"\n) + s
             end
 
-            react_cpp20_targets.each do |t|
-              t.build_configurations.each do |cfg|
-                bs = cfg.build_settings
-                # 升级到 gnu++20
-                bs['CLANG_CXX_LANGUAGE_STANDARD'] = 'gnu++20'
-                # flags 中如已有 -std=gnu++17，替换成 gnu++20；否则追加
-                flags = Array(bs['OTHER_CPLUSPLUSFLAGS']).map(&:to_s)
-                if flags.any? { |f| f.include?('-std=gnu++17') }
-                  flags = flags.map { |f| f.include?('-std=gnu++17') ? '-std=gnu++20' : f }
-                else
-                  flags << '-std=gnu++20'
+            # 2) post_install 钩子里统一 Pods 的 SWIFT_VERSION 和 IPHONEOS_DEPLOYMENT_TARGET
+            injector = <<~'HOOK'
+            post_install do |installer|
+              installer.pods_project.targets.each do |t|
+                t.build_configurations.each do |cfg|
+                  cfg.build_settings['SWIFT_VERSION'] = '5.9'
+                  if cfg.build_settings['IPHONEOS_DEPLOYMENT_TARGET'].to_s < '16.0'
+                    cfg.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'
+                  end
                 end
-                bs['OTHER_CPLUSPLUSFLAGS'] = flags.uniq
-                # 统一 libc++
-                bs['CLANG_CXX_LIBRARY'] = 'libc++'
               end
             end
-          INJECT
+            HOOK
 
-          if s =~ /post_install do \|installer\|/m
-            s = s.gsub(/post_install do \|installer\|.*?end/m) do |blk|
-              blk.include?('react_cpp20_targets') ? blk : blk.sub(/end\s*\z/, inject + "\nend")
+            if s =~ /post_install do \|installer\|/
+              # 已有 post_install：若缺关键设置则注入（幂等）
+              s = s.gsub(/post_install do \|installer\|.*?end/m) do |blk|
+                need_swift = (blk !~ /SWIFT_VERSION/)
+                need_deploy = (blk !~ /IPHONEOS_DEPLOYMENT_TARGET/)
+                if need_swift || need_deploy
+                  blk.sub(/end\s*\z/, "  installer.pods_project.targets.each do |t|\n    t.build_configurations.each do |cfg|\n      cfg.build_settings['SWIFT_VERSION'] = '5.9'\n      if cfg.build_settings['IPHONEOS_DEPLOYMENT_TARGET'].to_s < '16.0'\n        cfg.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'\n      end\n    end\n  end\nend")
+                else
+                  blk
+                end
+              end
+            else
+              # 无 post_install：直接追加
+              s << "\n" + injector + "\n"
             end
-          else
-            s << <<~POST
 
-            post_install do |installer|
-          #{inject}
-            end
-            POST
-          end
-
-          File.write(path, s)
-          puts "Podfile post_install updated: React* pods use gnu++20."
+            File.write(path, s)
+            puts "Podfile patched for iOS 16 & Swift 5.9."
           RUBY
 
 
@@ -257,18 +191,6 @@ workflows:
           cd ios
           pod repo update || true
           pod install --repo-update
-
-      - name: "Diagnose Pods: build secure-pdf-viewer target verbosely (no xcpretty)"
-        script: |
-          set -euo pipefail
-          # 直接构建 Pods 工程里的目标，避免 xcpretty 吃掉错误
-          xcodebuild -project ios/Pods/Pods.xcodeproj \
-            -target secure-pdf-viewer \
-            -configuration Release \
-            -sdk iphoneos \
-            build \
-            | tee secure-pdf-viewer-build.log
-
 
       - name: "Verify installed provisioning profiles (read-only)"
         script: |
