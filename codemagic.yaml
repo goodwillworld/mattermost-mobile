@@ -310,7 +310,8 @@ workflows:
           pod repo update || true
           pod install --repo-update
 
-      - name: ascended: |
+      - name: "ascended"
+        script: |
           set -euo pipefail
           xcodebuild -project ios/Pods/Pods.xcodeproj \
             -target secure-pdf-viewer \
