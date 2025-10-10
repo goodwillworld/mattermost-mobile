@@ -1,102 +1,202 @@
 workflows:
   ios-mattermost-release:
-    name: iOS Mattermost (whitelabel) — up to pods
+    name: "Mattermost iOS (App Groups + Push)"
     instance_type: mac_mini_m2
-    max_build_duration: 120
-
-    # ✅ cache 放在 workflow 级别，而不是 environment 里
-    cache:
-      cache_paths:
-        - $HOME/Library/Caches/CocoaPods
-        - ios/Pods
-        - $CM_BUILD_DIR/node_modules
-        - $HOME/Library/Caches/npm/_cacache
+    max_build_duration: 60
 
     environment:
+      groups:
+        - ios_match
       vars:
-        APP_BUNDLE_ID: com.jboth.mine
-        SHARE_BUNDLE_ID: com.jboth.mine.MattermostShare
-        NOTIF_BUNDLE_ID: com.jboth.mine.NotificationService
-        APP_GROUP_ID: group.com.jboth.mine
-        APP_IOS_DEPLOYMENT_TARGET: "15.1"
-      xcode: 16.4
-      cocoapods: 1.15.2
-      node: 20.11.1
-      npm: 10.8.2
-
-    triggering:
-      events:
-        - push
-      branch_patterns:
-        - pattern: "*"
-          include: true
-          source: true
+        APP_NAME: "Mattermost"
+        MAIN_BUNDLE_ID: "com.jboth.mine"
+        SHARE_BUNDLE_ID: "com.jboth.mine.MattermostShare"
+        NOTI_BUNDLE_ID: "com.jboth.mine.NotificationService"
+        APP_GROUP_ID: "group.com.jboth.mine"
+        TEAM_ID: "866Y22894T"
+        CI: "true"
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.jboth.mine
 
     scripts:
-      - name: Show toolchain versions
+      - name: "Print tool versions"
         script: |
-          set -euo pipefail
-          sw_vers
+          set -e
           xcodebuild -version
           ruby -v
           pod --version
+
+      - name: "Use Node 20 LTS"
+        script: |
+          set -euo pipefail
+          export NVM_DIR="$HOME/.nvm"
+          if [ -s "$NVM_DIR/nvm.sh" ]; then
+            . "$NVM_DIR/nvm.sh"
+            nvm install 20
+            nvm use 20
+            echo 'export NVM_DIR="$HOME/.nvm"' >> $CM_ENV
+            echo '. "$NVM_DIR/nvm.sh" && nvm use 20 >/dev/null' >> $CM_ENV
+          else
+            echo "nvm not found, fallback to Homebrew node@20"
+            brew update || true
+            brew install node@20 || true
+            export PATH="/opt/homebrew/opt/node@20/bin:$PATH"
+            echo 'export PATH="/opt/homebrew/opt/node@20/bin:$PATH"' >> $CM_ENV
+          fi
           node -v
-          npm -v
+          npm -v || true
+          yarn -v || true
 
-      - name: NPM registry & config
+      - name: "Install JS deps (root)"
+        script: |
+          set -e
+          yarn install --frozen-lockfile || npm ci
+
+      - name: "Patch Podfile resolver (no heredoc)"
         script: |
           set -euo pipefail
-          echo "registry=https://registry.npmjs.org/" > .npmrc
-          npm config set registry https://registry.npmjs.org/
-          npm config set fund false
-          npm config set audit false
-          npm config set progress false
-
-      - name: Fix JS deps to known-good set & write lock
-        script: |
-          set -euo pipefail
-          node - <<'NODE'
-          const fs = require('fs');
-          const path = 'package.json';
-          const pkg = JSON.parse(fs.readFileSync(path, 'utf8'));
-
-          const pins = {
-            "eslint": "8.57.1",
-            "yaml": "2.4.5",
-            "ws": "7.5.9",
-            "set-function-length": "1.2.1"
-          };
-
-          pkg.overrides = Object.assign({}, pkg.overrides || {}, pins);
-
-          for (const sect of ["dependencies","devDependencies","optionalDependencies","peerDependencies"]) {
-            if (!pkg[sect]) continue;
-            for (const k of Object.keys(pins)) {
-              if (pkg[sect][k]) pkg[sect][k] = pins[k];
-            }
-          }
-
-          fs.writeFileSync(path, JSON.stringify(pkg, null, 2));
-          console.log('Pinned overrides:', pins);
-          NODE
-
-          npm install --package-lock-only --ignore-scripts --no-audit
-
-          if [ -f package-lock.json ]; then
-            sed -i.bak 's/"yaml": "2\.4\.1"/"yaml": "2.4.5"/g' package-lock.json || true
-            sed -i.bak 's/"ws": "7\.5\.10"/"ws": "7.5.9"/g'  package-lock.json || true
-            sed -i.bak 's/"set-function-length": "1\.2\.2"/"set-function-length": "1.2.1"/g' package-lock.json || true
+          PODFILE="ios/Podfile"
+          if [ -f "$PODFILE" ]; then
+            if grep -q "require Pod::Executable.execute_command('node', \['-p'" "$PODFILE"; then
+              perl -0777 -i -pe "s/require Pod::Executable.execute_command\(\s*'node'.*?\)\s*\]/react_native_pods = Pod::Executable.execute_command(\n  'node',\n  [\n    '-p',\n    <<~'NODE',\n      require.resolve(\n        'react-native\/scripts\/react_native_pods.rb',\n        { paths: [process.argv[1]] },\n      )\n    NODE,\n    Pod::Config.instance.project_root.to_s\n  ]\n)\nrequire react_native_pods/s" "$PODFILE"
+              echo "Patched Podfile resolver to use project_root"
+            else
+              echo "Podfile resolver already modernized or not matching; skip."
+            fi
+          else
+            echo "Podfile not found at ios/Podfile"
           fi
 
-      - name: Install JS deps (no ci, lock-first)
+      # ① MUST：物化干净 pbxproj + 校验（先于一切 Xcode 操作）
+      - name: "Project: set iOS 16 + Swift 5.9 + strict concurrency=minimal (Release)"
         script: |
           set -euo pipefail
-          if [ ! -f package-lock.json ]; then
-            npm install --package-lock-only --ignore-scripts --no-audit
+          if ! ruby -e "require 'xcodeproj'" 2>/dev/null; then
+            gem install xcodeproj --no-document
+            export GEM_HOME="$HOME/.gem"
+            export PATH="$HOME/.gem/bin:$PATH"
+            echo 'export GEM_HOME="$HOME/.gem"' >> $CM_ENV
+            echo 'export PATH="$HOME/.gem/bin:$PATH"' >> $CM_ENV
           fi
-          npm install --ignore-scripts --no-audit
 
-      - name: Prepare Podfile (safe resolver + Swift unification)
+          ruby - <<'RB'
+            require 'xcodeproj'
+            proj = Xcodeproj::Project.open('ios/Mattermost.xcodeproj')
+            targets = ['Mattermost', 'MattermostShare', 'NotificationService']
+            proj.targets.each do |t|
+              next unless targets.include?(t.name)
+              t.build_configurations.each do |cfg|
+                next unless cfg.name == 'Release'
+                bs = cfg.build_settings
+                bs['SWIFT_VERSION'] = '5.9'
+                if bs['IPHONEOS_DEPLOYMENT_TARGET'].to_s < '16.0'
+                  bs['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'
+                end
+                bs['SWIFT_STRICT_CONCURRENCY'] = 'minimal'
+              end
+            end
+            proj.save
+            puts "Project Release configs updated."
+          RB
+
+          xcodebuild -project ios/Mattermost.xcodeproj -list
+
+
+      - name: "Bump deployment target in project to iOS 16.0 (Release only)"
+        script: |
+          set -euo pipefail
+          if ! ruby -e "require 'xcodeproj'" 2>/dev/null; then
+            gem install xcodeproj --no-document
+            export GEM_HOME="$HOME/.gem"
+            export PATH="$HOME/.gem/bin:$PATH"
+            echo 'export GEM_HOME="$HOME/.gem"' >> $CM_ENV
+            echo 'export PATH="$HOME/.gem/bin:$PATH"' >> $CM_ENV
+          fi
+
+          ruby - <<'RB'
+            require 'xcodeproj'
+            proj = Xcodeproj::Project.open('ios/Mattermost.xcodeproj')
+            targets = ['Mattermost', 'MattermostShare', 'NotificationService']
+            proj.targets.each do |t|
+              next unless targets.include?(t.name)
+              t.build_configurations.each do |cfg|
+                next unless cfg.name == 'Release'
+                bs = cfg.build_settings
+                # 仅在小于 16.0 时提升；不向下覆盖
+                if bs['IPHONEOS_DEPLOYMENT_TARGET'].to_s < '16.0'
+                  bs['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'
+                end
+              end
+            end
+            proj.save
+            puts "Raised IPHONEOS_DEPLOYMENT_TARGET to 16.0 for Release configs."
+          RB
+
+          # 确认 project 仍可读
+          xcodebuild -project ios/Mattermost.xcodeproj -list
+
+
+      - name: "MUST: materialize & verify clean pbxproj (.clean)"
+        script: |
+          set -euo pipefail
+          SRC="ios/Mattermost.xcodeproj/project.pbxproj.clean"
+          DST="ios/Mattermost.xcodeproj/project.pbxproj"
+          ls -l "$SRC"
+          cp "$SRC" "$DST"
+          md5_src=$(md5 -q "$SRC"); md5_dst=$(md5 -q "$DST")
+          echo "SRC MD5: $md5_src"; echo "DST MD5: $md5_dst"
+          [ "$md5_src" = "$md5_dst" ] || { echo "Overwrite failed"; exit 1; }
+          cp "$DST" ios/Mattermost.xcodeproj/project.pbxproj.good
+          xcodebuild -project ios/Mattermost.xcodeproj -list
+
+      - name: "Project: unify Swift=5.9 + iOS 16.0 + concurrency=minimal (ALL configs)"
+        script: |
+          set -euo pipefail
+          if ! ruby -e "require 'xcodeproj'" 2>/dev/null; then
+            gem install xcodeproj --no-document
+            export GEM_HOME="$HOME/.gem"
+            export PATH="$HOME/.gem/bin:$PATH"
+            echo 'export GEM_HOME="$HOME/.gem"' >> $CM_ENV
+            echo 'export PATH="$HOME/.gem/bin:$PATH"' >> $CM_ENV
+          fi
+
+          ruby - <<'RB'
+            require 'xcodeproj'
+            proj = Xcodeproj::Project.open('ios/Mattermost.xcodeproj')
+
+            # 覆盖工程级别（可选，保险）
+            proj.build_configurations.each do |cfg|
+              bs = cfg.build_settings
+              bs['SWIFT_VERSION'] = '5.9'
+              if bs['IPHONEOS_DEPLOYMENT_TARGET'].to_s < '16.0'
+                bs['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'
+              end
+              bs['SWIFT_STRICT_CONCURRENCY'] = 'minimal'
+            end
+
+            # 覆盖三个 targets 的“所有配置”（Debug/Release都要统一）
+            targets = ['Mattermost','MattermostShare','NotificationService']
+            proj.targets.each do |t|
+              next unless targets.include?(t.name)
+              t.build_configurations.each do |cfg|
+                bs = cfg.build_settings
+                bs['SWIFT_VERSION'] = '5.9'
+                if bs['IPHONEOS_DEPLOYMENT_TARGET'].to_s < '16.0'
+                  bs['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'
+                end
+                bs['SWIFT_STRICT_CONCURRENCY'] = 'minimal'
+              end
+            end
+
+            proj.save
+            puts "Unified Swift/iOS/concurrency across ALL build configurations."
+          RB
+
+          # 再次快速健康检查
+          xcodebuild -project ios/Mattermost.xcodeproj -list
+
+      - name: "Patch Podfile: add C++17 settings for Pods (incl. secure-pdf-viewer)"
         script: |
           set -euo pipefail
           P=ios/Podfile
@@ -106,251 +206,212 @@ workflows:
           path = 'ios/Podfile'
           s = File.read(path)
 
-          unless s.include?("def node_require(")
-            inject = <<~'HEAD'
-            def node_require(script)
-              require Pod::Executable.execute_command('node', ['-p',
-                "require.resolve(
-                  '\#{script}',
-                  {paths: [process.argv[1]]},
-                )", __dir__]).strip
+          inject = <<~'INJECT'
+            # === RN C++ pods need C++20 for std::unordered_map::contains etc. ===
+            react_cpp20_targets = installer.pods_project.targets.select { |t| t.name.start_with?('React-') }
+
+              # 精准包含触发的 target，同时兼顾可能的相关 C++ 目标
+              t.name == 'React-perflogger' || t.name == 'React-Fabric' || t.name == 'React-FabricComponents'
             end
 
-            expo_pkg = `node -e "try{console.log(require.resolve('expo/package.json'))}catch(e){}"`.strip
-            if !expo_pkg.empty? && File.exist?(File.join(File.dirname(expo_pkg), "scripts/autolinking.rb"))
-              require File.join(File.dirname(expo_pkg), "scripts/autolinking")
-              $expo_modules_available = true
-            else
-              Pod::UI.puts "Expo not detected; skipping Expo autolinking.".yellow
-              $expo_modules_available = false
-              def use_expo_modules!(*args); end
+            react_cpp20_targets.each do |t|
+              t.build_configurations.each do |cfg|
+                bs = cfg.build_settings
+                # 升级到 gnu++20
+                bs['CLANG_CXX_LANGUAGE_STANDARD'] = 'gnu++20'
+                # flags 中如已有 -std=gnu++17，替换成 gnu++20；否则追加
+                flags = Array(bs['OTHER_CPLUSPLUSFLAGS']).map(&:to_s)
+                if flags.any? { |f| f.include?('-std=gnu++17') }
+                  flags = flags.map { |f| f.include?('-std=gnu++17') ? '-std=gnu++20' : f }
+                else
+                  flags << '-std=gnu++20'
+                end
+                bs['OTHER_CPLUSPLUSFLAGS'] = flags.uniq
+                # 统一 libc++
+                bs['CLANG_CXX_LIBRARY'] = 'libc++'
+              end
             end
+          INJECT
 
-            node_require('react-native/scripts/react_native_pods.rb')
-            node_require('react-native-permissions/scripts/setup.rb')
-            HEAD
-            s = inject + "\n" + s
-          end
+          if s =~ /post_install do \|installer\|/m
+            s = s.gsub(/post_install do \|installer\|.*?end/m) do |blk|
+              blk.include?('react_cpp20_targets') ? blk : blk.sub(/end\s*\z/, inject + "\nend")
+            end
+          else
+            s << <<~POST
 
-          unless s =~ /^\s*platform\s+:ios,/
-            s = s.sub(/^/, "platform :ios, '15.1'\n")
+            post_install do |installer|
+          #{inject}
+            end
+            POST
           end
 
           File.write(path, s)
-          puts "Podfile base prepared."
+          puts "Podfile post_install updated: React* pods use gnu++20."
           RUBY
 
-          ruby - <<'RUBY'
-          path = 'ios/Podfile'
-          s = File.read(path)
 
-          pre_blk = <<~'PRE'
-          pre_install do |installer|
-            installer.pod_targets.each do |pod|
-              begin
-                pod.swift_version = '5.9'
-              rescue
+      - name: "Install pods"
+        script: |
+          set -e
+          cd ios
+          pod repo update || true
+          pod install --repo-update
+
+      - name: "Diagnose Pods: build secure-pdf-viewer target verbosely (no xcpretty)"
+        script: |
+          set -euo pipefail
+          # 直接构建 Pods 工程里的目标，避免 xcpretty 吃掉错误
+          xcodebuild -project ios/Pods/Pods.xcodeproj \
+            -target secure-pdf-viewer \
+            -configuration Release \
+            -sdk iphoneos \
+            build \
+            | tee secure-pdf-viewer-build.log
+
+
+      - name: "Verify installed provisioning profiles (read-only)"
+        script: |
+          set -euo pipefail
+          PDIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          echo "==> Profiles in $PDIR"
+          ls -l "$PDIR" || true
+          shopt -s nullglob
+          for f in "$PDIR"/*.mobileprovision "$PDIR"/*.provisionprofile; do
+            echo "----- $f -----"
+            /usr/bin/security cms -D -i "$f" > /tmp/p.plist || { echo "  failed to decode"; continue; }
+            echo "Name:  $(/usr/bin/plutil -extract Name raw -o - /tmp/p.plist 2>/dev/null || true)"
+            echo "UUID:  $(/usr/bin/plutil -extract UUID raw -o - /tmp/p.plist 2>/dev/null || true)"
+            echo "AppID: $(/usr/bin/plutil -extract Entitlements.application-identifier raw -o - /tmp/p.plist 2>/dev/null || true)"
+            echo -n "Has App Groups: "
+            if /usr/libexec/PlistBuddy -c "Print :Entitlements:com.apple.security.application-groups" /tmp/p.plist >/dev/null 2>&1; then
+              echo "yes"
+            else
+              echo "no"
+            fi
+            echo -n "aps-environment: "
+            /usr/bin/plutil -extract Entitlements.aps-environment raw -o - /tmp/p.plist 2>/dev/null || echo "(none)"
+          done
+
+      # ② 用 Ruby xcodeproj 安全写签名（替代任何注入/新增行方式）
+      - name: "Set signing via Ruby xcodeproj (safe, no regex)"
+        script: |
+          set -euo pipefail
+          if ! ruby -e "require 'xcodeproj'" 2>/dev/null; then
+            gem install xcodeproj --no-document
+            export GEM_HOME="$HOME/.gem"
+            export PATH="$HOME/.gem/bin:$PATH"
+            echo 'export GEM_HOME="$HOME/.gem"' >> $CM_ENV
+            echo 'export PATH="$HOME/.gem/bin:$PATH"' >> $CM_ENV
+          fi
+
+          ruby - <<'RB'
+            require 'xcodeproj'
+            proj = Xcodeproj::Project.open('ios/Mattermost.xcodeproj')
+
+            TEAM  = ENV.fetch('TEAM_ID', '')
+            raise "TEAM_ID empty" if TEAM.nil? || TEAM.empty?
+
+            targets = {
+              'Mattermost'          => { bundle: ENV['MAIN_BUNDLE_ID']  || 'com.jboth.mine',                     profile: 'jboth_chat' },
+              'MattermostShare'     => { bundle: ENV['SHARE_BUNDLE_ID'] || 'com.jboth.mine.MattermostShare',     profile: 'jboth_share' },
+              'NotificationService' => { bundle: ENV['NOTI_BUNDLE_ID']  || 'com.jboth.mine.NotificationService', profile: 'jboth_notification' },
+            }
+
+            proj.targets.each do |t|
+              next unless targets.key?(t.name)
+              spec = targets[t.name]
+
+              t.build_configurations.each do |cfg|
+                next unless cfg.name == 'Release'  # 仅改 Release
+                bs = cfg.build_settings
+                bs['PRODUCT_BUNDLE_IDENTIFIER'] = spec[:bundle]
+                bs['DEVELOPMENT_TEAM']          = TEAM
+                bs['CODE_SIGN_STYLE']           = 'Manual'
+                bs['CODE_SIGN_IDENTITY[sdk=iphoneos*]']            = 'Apple Distribution'
+                bs['PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]'] = spec[:profile]
+                # 保底：移除旧的整机键，避免走错
+                bs.delete('PROVISIONING_PROFILE')
+                bs.delete('CODE_SIGN_IDENTITY')
               end
             end
-          end
-          PRE
 
-          if s.include?('pre_install do |installer|')
-            puts "pre_install present, skip inject."
-          else
-            s << "\n" + pre_blk + "\n"
-            File.write(path, s)
-            puts "Injected pre_install to unify Swift versions."
-          end
-          RUBY
+            proj.save
+            puts "Signing settings updated safely."
+          RB
 
-      - name: Install pods
+          # 立即验证；若损坏则回滚
+          if ! xcodebuild -project ios/Mattermost.xcodeproj -list >/dev/null; then
+            echo "Project became unreadable; rollback to .good"
+            cp ios/Mattermost.xcodeproj/project.pbxproj.good ios/Mattermost.xcodeproj/project.pbxproj
+            exit 1
+          fi
+
+      # ③ project 级签名键自检（避免受 workspace 干扰）
+      - name: "Dump signing keys per target (Release + iphoneos) via project"
         script: |
           set -euo pipefail
+          for T in Mattermost MattermostShare NotificationService; do
+            echo "---- $T ----"
+            xcodebuild -project ios/Mattermost.xcodeproj \
+              -target "$T" \
+              -configuration Release \
+              -sdk iphoneos \
+              -showBuildSettings \
+              | egrep "(PRODUCT_BUNDLE_IDENTIFIER|CODE_SIGN_ENTITLEMENTS|DEVELOPMENT_TEAM|CODE_SIGN_STYLE|CODE_SIGN_IDENTITY\[sdk=iphoneos\*\]|PROVISIONING_PROFILE_SPECIFIER\[sdk=iphoneos\*\])" \
+              || true
+          done
+
+      # ④ 归档
+      - name: "Build archive"
+        script: |
+          set -e
           cd ios
-          pod repo update
-          pod install --verbose
-
-      # # --- 5) pod install ---
-      # - name: Install pods (with repo update)
-      #   script: |
-      #     set -euo pipefail
-      #     pushd ios >/dev/null
-      #     pod repo update
-      #     pod install --repo-update
-      #     popd >/dev/null
-
-      # --- 6) 注入 Entitlements（App Group + aps-environment=production）---
-      - name: Ensure entitlements (App Group & aps)
-        script: |
-          set -euo pipefail
-          E_APP="ios/Mattermost/Mattermost.entitlements"
-          E_SHARE="ios/MattermostShare/MattermostShare.entitlements"
-          E_NOTIF="ios/NotificationService/NotificationService.entitlements"
-
-          for E in "$E_APP" "$E_SHARE" "$E_NOTIF"; do
-            /usr/libexec/PlistBuddy -c "Add :com.apple.security.application-groups array" "$E" 2>/dev/null || true
-            /usr/libexec/PlistBuddy -c "Delete :com.apple.security.application-groups" "$E" 2>/dev/null || true
-            /usr/libexec/PlistBuddy -c "Add :com.apple.security.application-groups array" "$E"
-            /usr/libexec/PlistBuddy -c "Add :com.apple.security.application-groups:0 string $APP_GROUP" "$E"
-          done
-
-          # 主 app 需要 push
-          /usr/libexec/PlistBuddy -c "Set :aps-environment production" "$E_APP" 2>/dev/null || \
-          /usr/libexec/PlistBuddy -c "Add :aps-environment string production" "$E_APP"
-
-          echo "Entitlements updated."
-
-      # --- 7) 安装/拷贝 Provisioning Profiles（来自 Secure files）---
-      # 把 3 个 .mobileprovision 作为 Secure files 关联到该工作流即可（名字不限）
-      - name: Install provisioning profiles
-        script: |
-          set -euo pipefail
-          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
-          for f in *.mobileprovision; do
-            if [ -f "$f" ]; then
-              cp "$f" "$HOME/Library/MobileDevice/Provisioning Profiles/$(basename "$f")"
-              echo "Installed profile: $f"
-            fi
-          done
-          ls -l "$HOME/Library/MobileDevice/Provisioning Profiles" || true
-
-      # --- 8) 强制设置 Manual 签名 + 绑定 TEAM/IDENTITY（仅 sdk=iphoneos*）---
-      - name: Patch signing in pbxproj (manual + team + identity)
-        script: |
-          set -euo pipefail
-          PBX="ios/Mattermost.xcodeproj/project.pbxproj"
-          test -f "$PBX"
-
-          # 统一为手动签名；设置 TEAM；设置发行证书标识（Apple Distribution）
-          ruby - <<'RUBY'
-          pbx = 'ios/Mattermost.xcodeproj/project.pbxproj'
-          s = File.read(pbx)
-
-          # 手动签名
-          s.gsub!(/CODE_SIGN_STYLE\s*=\s*Automatic;/, 'CODE_SIGN_STYLE = Manual;')
-
-          # TEAM
-          team = ENV['TEAM_ID'] || ''
-          raise "TEAM_ID missing" if team.empty?
-          s.gsub!(/DEVELOPMENT_TEAM\s*=\s*[A-Z0-9]+;/, "DEVELOPMENT_TEAM = #{team};")
-
-          # 证书标识：仅限制到 iPhoneOS
-          s.gsub!(/"CODE_SIGN_IDENTITY\[sdk=iphoneos\*\]"\s*=\s*"[^"]+";/, '"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Distribution";')
-          s.gsub!(/CODE_SIGN_IDENTITY\s*=\s*"[^"]+";/, 'CODE_SIGN_IDENTITY = "Apple Distribution";')
-
-          File.write(pbx, s)
-          puts "Patched pbxproj signing (Manual/TEAM/IDENTITY)."
-          RUBY
-
-      # --- 9) 为 3 个 target 匹配对应的 Provisioning Profile（Specifier & UUID）---
-      - name: Bind provisioning profiles to targets
-        script: |
-          set -euo pipefail
-          PBX="ios/Mattermost.xcodeproj/project.pbxproj"
-
-          # 解析系统中可用的 profiles（简单 grep/awk）
-          list_profiles() {
-            for p in "$HOME/Library/MobileDevice/Provisioning Profiles/"*.mobileprovision; do
-              /usr/bin/security cms -D -i "$p" >/tmp/p.plist
-              NAME=$(/usr/libexec/PlistBuddy -c "Print :Name" /tmp/p.plist 2>/dev/null || true)
-              UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /tmp/p.plist 2>/dev/null || true)
-              APPID=$(/usr/libexec/PlistBuddy -c "Print :Entitlements:application-identifier" /tmp/p.plist 2>/dev/null || true)
-              echo "$NAME|$UUID|$APPID|$p"
-            done
-          }
-
-          bind_one() {
-            local BID="$1"   # bundle id
-            local NAME="$2"  # friendly name (for log)
-            local LINE
-            LINE=$(list_profiles | awk -F'|' -v bid="$TEAM_ID.$BID" '$3==bid {print; exit}')
-            if [ -z "$LINE" ]; then
-              echo "ERROR: No profile for $BID"; exit 1
-            fi
-            IFS='|' read PNAME PUUID PAPP PFILE <<<"$LINE"
-            echo "Matched $NAME ($BID): $PNAME ($PUUID)"
-
-            # 写入 pbxproj：只改 sdk=iphoneos*
-            /usr/bin/perl -0777 -pe "s/\"PROVISIONING_PROFILE_SPECIFIER\\[sdk=iphoneos\\*\\]\" = \".*?\";/\"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]\" = \"$PNAME\";/g" -i "$PBX"
-            /usr/bin/perl -0777 -pe "s/\"PROVISIONING_PROFILE\\[sdk=iphoneos\\*\\]\" = \".*?\";/\"PROVISIONING_PROFILE[sdk=iphoneos*]\" = \"$PUUID\";/g" -i "$PBX"
-          }
-
-          bind_one "$APP_BUNDLE_ID"      "Mattermost"
-          bind_one "$SHARE_BUNDLE_ID"    "MattermostShare"
-          bind_one "$NOTIF_BUNDLE_ID"    "NotificationService"
-
-          echo "Profiles bound in pbxproj."
-
-      # --- 10) 最小 sanity：列出 scheme & 目标 ---
-      - name: Sanity check xcodebuild -list
-        script: |
-          set -euo pipefail
-          xcodebuild -project "$PROJECT" -list
-          xcodebuild -workspace "$WORKSPACE" -list
-
-      # --- 11) 编译归档 ---
-      - name: Build archive
-        script: |
-          set -euo pipefail
-          set -o pipefail
-          xcodebuild -workspace "$WORKSPACE" \
-            -scheme "$SCHEME" \
-            -configuration "$CONFIGURATION" \
+          xcodebuild -workspace Mattermost.xcworkspace \
+            -scheme Mattermost \
+            -configuration Release \
             -sdk iphoneos \
-            -archivePath ios/build/Mattermost.xcarchive \
+            -archivePath build/ios/xcarchive/Mattermost.xcarchive \
             CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM="${TEAM_ID}" \
             COMPILER_INDEX_STORE_ENABLE=NO \
-            build archive | xcpretty
-          status=${PIPESTATUS[0]}
-          exit $status
+            archive | xcpretty && exit ${PIPESTATUS[0]}
 
-      # --- 12) 导出 IPA（ad-hoc），显式写入 provisioningProfiles 映射 ---
-      - name: Export IPA
+      - name: "Generate export options (App Store)"
         script: |
-          set -euo pipefail
-          cat > exportOptions.plist <<EOF
+          set -e
+          cat > export_options.plist <<'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
-            <key>method</key>
-            <string>${EXPORT_METHOD}</string>
-            <key>signingStyle</key>
-            <string>manual</string>
-            <key>provisioningProfiles</key>
-            <dict>
-              <key>${APP_BUNDLE_ID}</key>
-              <string>jboth_chat</string>
-              <key>${SHARE_BUNDLE_ID}</key>
-              <string>jboth_share</string>
-              <key>${NOTIF_BUNDLE_ID}</key>
-              <string>jboth_notification</string>
-            </dict>
-            <key>stripSwiftSymbols</key>
-            <true/>
-            <key>compileBitcode</key>
-            <false/>
+            <key>method</key><string>app-store</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>destination</key><string>export</string>
+            <key>compileBitcode</key><false/>
           </dict>
           </plist>
           EOF
 
+      - name: "Export IPA"
+        script: |
+          set -e
+          cd ios
           xcodebuild -exportArchive \
-            -archivePath ios/build/Mattermost.xcarchive \
-            -exportOptionsPlist exportOptions.plist \
-            -exportPath build_output
-
-          ls -lah build_output
+            -archivePath build/ios/xcarchive/Mattermost.xcarchive \
+            -exportPath ipa \
+            -exportOptionsPlist ../export_options.plist | xcpretty && exit ${PIPESTATUS[0]}
 
     artifacts:
-      - build_output/*.ipa
-      - ios/build/Mattermost.xcarchive
-      - build_output/*.dSYM.zip
-      - exportOptions.plist
+      - ios/ipa/*.ipa
+      - ios/build/**/*.xcarchive
+
     publishing:
+      app_store_connect:
+        api_key: "$APP_STORE_CONNECT_PRIVATE_KEY"
+        key_id: "$APP_STORE_CONNECT_KEY_ID"
+        issuer_id: "$APP_STORE_CONNECT_ISSUER_ID"
+        submit_to_testflight: true
       email:
         recipients:
-          - you@example.com
-        notify:
-          success: true
-          failure: true
+          - bill.fan4java@gmail.com
