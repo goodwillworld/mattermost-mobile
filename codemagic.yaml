@@ -103,6 +103,29 @@ workflows:
               echo "Yoga依赖添加失败"
               exit 1
             fi
+            # 修补glog以确保config.h可用
+            if [ -d "Pods/glog" ]; then
+              echo "检查glog的config.h"
+              if [ ! -f "Pods/glog/config.h" ]; then
+                echo "未找到config.h，尝试从react-native生成"
+                GLOG_SRC="../node_modules/react-native/third-party/glog-0.3.5"
+                if [ -d "$GLOG_SRC" ]; then
+                  cd "$GLOG_SRC"
+                  ./configure --host arm-apple-darwin || true
+                  if [ -f "config.h" ]; then
+                    cp config.h "../../../ios/Pods/glog/config.h"
+                    echo "已复制config.h到Pods/glog"
+                  else
+                    echo "glog配置失败，无法生成config.h"
+                    exit 1
+                  fi
+                  cd -
+                else
+                  echo "未找到react-native的glog源，无法生成config.h"
+                  exit 1
+                fi
+              fi
+            fi
           else
             echo "未找到Podfile"
             exit 1
@@ -171,24 +194,25 @@ workflows:
             require 'xcodeproj'
             proj = Xcodeproj::Project.open('ios/Pods/Pods.xcodeproj')
             proj.targets.each do |t|
-              next unless ['Alamofire', 'secure-pdf-viewer'].include?(t.name)
+              next unless ['Alamofire', 'secure-pdf-viewer', 'glog'].include?(t.name)
               t.build_configurations.each do |cfg|
                 bs = cfg.build_settings
-                bs['SWIFT_STRICT_CONCURRENCY'] = 'minimal'
+                bs['SWIFT_STRICT_CONCURRENCY'] = 'minimal' if t.name == 'Alamofire'
                 bs['SWIFT_VERSION'] = '5.9'
                 if bs['IPHONEOS_DEPLOYMENT_TARGET'].to_s < '16.0'
                   bs['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'
                 end
-                if t.name == 'secure-pdf-viewer'
+                if t.name == 'secure-pdf-viewer' || t.name == 'glog'
                   headers = bs['HEADER_SEARCH_PATHS'] || []
                   headers = [headers] unless headers.is_a?(Array)
                   headers << '"$(PODS_ROOT)/Yoga/yoga"'
+                  headers << '"$(PODS_ROOT)/glog"'
                   bs['HEADER_SEARCH_PATHS'] = headers.uniq
                 end
               end
             end
             proj.save
-            puts "已更新Pods项目：Alamofire和secure-pdf-viewer的SWIFT_STRICT_CONCURRENCY=minimal, SWIFT_VERSION=5.9, IPHONEOS_DEPLOYMENT_TARGET=16.0，并为secure-pdf-viewer添加Yoga头文件路径"
+            puts "已更新Pods项目：Alamofire的SWIFT_STRICT_CONCURRENCY=minimal, SWIFT_VERSION=5.9, IPHONEOS_DEPLOYMENT_TARGET=16.0，并为secure-pdf-viewer和glog添加Yoga和glog头文件路径"
           RB
 
       - name: "项目：设置iOS 16 + Swift 5.9 + 严格并发=minimal（Release）"
@@ -369,7 +393,7 @@ workflows:
             -configuration Release \
             -sdk iphoneos \
             build \
-            HEADER_SEARCH_PATHS="$HEADER_SEARCH_PATHS $PODS_ROOT/Yoga/yoga" \
+            HEADER_SEARCH_PATHS="$HEADER_SEARCH_PATHS $PODS_ROOT/Yoga/yoga $PODS_ROOT/glog" \
             | tee secure-pdf-viewer-build.log
 
       - name: "验证已安装的签名配置文件（只读）"
