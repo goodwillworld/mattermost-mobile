@@ -362,12 +362,14 @@ workflows:
       - name: "诊断Pods：详细构建secure-pdf-viewer目标"
         script: |
           set -euo pipefail
+          export HEADER_SEARCH_PATHS="${HEADER_SEARCH_PATHS:-}"
+          export PODS_ROOT="${PODS_ROOT:-Pods}"
           xcodebuild -project ios/Pods/Pods.xcodeproj \
             -target secure-pdf-viewer \
             -configuration Release \
             -sdk iphoneos \
             build \
-            HEADER_SEARCH_PATHS="$HEADER_SEARCH_PATHS $(PODS_ROOT)/Yoga/yoga" \
+            HEADER_SEARCH_PATHS="$HEADER_SEARCH_PATHS $PODS_ROOT/Yoga/yoga" \
             | tee secure-pdf-viewer-build.log
 
       - name: "验证已安装的签名配置文件（只读）"
