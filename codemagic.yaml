@@ -58,8 +58,8 @@ workflows:
           set -euo pipefail
           PODFILE="ios/Podfile"
           if [ -f "$PODFILE" ]; then
-            if grep -q "require Pod::Executable.execute_command('node', $$ '-p'" "$PODFILE"; then
-              perl -0777 -i -pe "s/require Pod::Executable.execute_command\(\s*'node'.*?\)\s* $$/react_native_pods = Pod::Executable.execute_command(\n  'node',\n  [\n    '-p',\n    <<~'NODE',\n      require.resolve(\n        'react-native\/scripts\/react_native_pods.rb',\n        { paths: [process.argv[1]] },\n      )\n    NODE,\n    Pod::Config.instance.project_root.to_s\n  ]\n)\nrequire react_native_pods/s" "$PODFILE"
+            if grep -q "require Pod::Executable.execute_command('node', \['-p'" "$PODFILE"; then
+              perl -0777 -i -pe "s/require Pod::Executable.execute_command\(\s*'node'.*?\)\s*\]/react_native_pods = Pod::Executable.execute_command(\n  'node',\n  [\n    '-p',\n    <<~'NODE',\n      require.resolve(\n        'react-native\/scripts\/react_native_pods.rb',\n        { paths: [process.argv[1]] },\n      )\n    NODE,\n    Pod::Config.instance.project_root.to_s\n  ]\n)\nrequire react_native_pods/s" "$PODFILE"
               echo "修补Podfile解析器以使用project_root"
             else
               echo "Podfile解析器已现代化或不匹配，跳过。"
@@ -81,19 +81,24 @@ workflows:
             if grep -q 'pod "Yoga"' Podfile; then
               echo "Podfile已包含Yoga依赖，跳过追加"
             else
-              if grep -q "target 'Mattermost' do" Podfile; then
-                sed -i '' "/use_expo_modules!/a\\
-                pod \"Yoga\", :path => \"../node_modules/react-native/ReactCommon/yoga\"" Podfile
-                echo "已追加Yoga依赖到target 'Mattermost'块（在use_expo_modules!之后）"
+              pod install --repo-update
+              if grep -q "Yoga:" Podfile.lock 2>/dev/null; then
+                echo "Podfile.lock已包含Yoga（可能由use_react_native!引入），跳过追加"
               else
-                echo "Podfile中未找到target 'Mattermost'，无法追加Yoga依赖"
-                exit 1
+                if grep -q "target 'Mattermost' do" Podfile; then
+                  sed -i '' "/use_expo_modules!/a\\
+                      pod \"Yoga\", :path => \"../node_modules/react-native/ReactCommon/yoga\"" Podfile
+                  echo "已追加Yoga依赖到target 'Mattermost'块（在use_expo_modules!之后，4空格缩进）"
+                else
+                  echo "Podfile中未找到target 'Mattermost'，无法追加Yoga依赖"
+                  exit 1
+                fi
               fi
             fi
             echo "更新后的Podfile内容："
             cat Podfile
-            if grep -q 'pod "Yoga"' Podfile; then
-              echo "确认Yoga依赖已添加"
+            if grep -q 'pod "Yoga"' Podfile || grep -q "Yoga:" Podfile.lock 2>/dev/null; then
+              echo "确认Yoga依赖已存在（Podfile或Podfile.lock）"
             else
               echo "Yoga依赖添加失败"
               exit 1
@@ -440,7 +445,7 @@ workflows:
               -configuration Release \
               -sdk iphoneos \
               -showBuildSettings \
-              | egrep "(PRODUCT_BUNDLE_IDENTIFIER|CODE_SIGN_ENTITLEMENTS|DEVELOPMENT_TEAM|CODE_SIGN_STYLE|CODE_SIGN_IDENTITY$$ sdk=iphoneos\* $$|PROVISIONING_PROFILE_SPECIFIER$$ sdk=iphoneos\* $$)" \
+              | egrep "(PRODUCT_BUNDLE_IDENTIFIER|CODE_SIGN_ENTITLEMENTS|DEVELOPMENT_TEAM|CODE_SIGN_STYLE|CODE_SIGN_IDENTITY\[sdk=iphoneos\*\]|PROVISIONING_PROFILE_SPECIFIER\[sdk=iphoneos\*\])" \
               || true
           done
 
