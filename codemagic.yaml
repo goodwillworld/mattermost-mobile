@@ -70,14 +70,30 @@ workflows:
 
       - name: "清理Pods缓存并确保Yoga依赖"
         script: |
-          set -e
+          set -euo pipefail
           cd ios
           pod cache clean --all
           rm -rf Pods
           rm -f Podfile.lock
-          sed -i '' '/pod "React-Core"/a pod "Yoga", :path => "../node_modules/react-native/ReactCommon/yoga"' Podfile
+          if [ -f "Podfile" ]; then
+            if grep -q 'pod "Yoga"' Podfile; then
+              echo "Podfile已包含Yoga依赖，跳过追加"
+            else
+              if grep -q 'pod "React-Core"' Podfile; then
+                sed -i '' '/pod "React-Core"/a\
+                pod "Yoga", :path => "../node_modules/react-native/ReactCommon/yoga"' Podfile
+                echo "已追加Yoga依赖到Podfile"
+              else
+                echo "Podfile中未找到pod 'React-Core'，无法追加Yoga依赖"
+                exit 1
+              fi
+            fi
+          else
+            echo "未找到Podfile"
+            exit 1
+          fi
           pod install --repo-update
-          echo "已清理Pods缓存并确保Yoga依赖"
+          echo "已清理Pods缓存并完成pod install"
 
       - name: "更新Alamofire到最新版本"
         script: |
