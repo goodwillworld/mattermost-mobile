@@ -82,8 +82,9 @@ workflows:
               echo "Podfile已包含Yoga依赖，跳过追加"
             else
               if grep -q "target 'Mattermost' do" Podfile; then
+                # 确保在use_expo_modules!后追加，且保持正确缩进
                 sed -i '' "/use_expo_modules!/a\\
-                    pod \"Yoga\", :path => \"../node_modules/react-native/ReactCommon/yoga\"" Podfile
+          pod \"Yoga\", :path => \"../node_modules/react-native/ReactCommon/yoga\"" Podfile
                 echo "已追加Yoga依赖到target 'Mattermost'块（在use_expo_modules!之后，4空格缩进）"
               else
                 echo "Podfile中未找到target 'Mattermost'，无法追加Yoga依赖"
