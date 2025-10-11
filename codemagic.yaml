@@ -81,35 +81,24 @@ workflows:
             if grep -q 'pod "Yoga"' Podfile; then
               echo "Podfile已包含Yoga依赖，跳过追加"
             else
-              pod install --repo-update
-              if grep -q "Yoga:" Podfile.lock 2>/dev/null; then
-                echo "Podfile.lock已包含Yoga（可能由use_react_native!引入），跳过追加"
+              if grep -q "target 'Mattermost' do" Podfile; then
+                sed -i '' "/use_expo_modules!/a\\
+                    pod \"Yoga\", :path => \"../node_modules/react-native/ReactCommon/yoga\"" Podfile
+                echo "已追加Yoga依赖到target 'Mattermost'块（在use_expo_modules!之后，4空格缩进）"
               else
-                if grep -q "target 'Mattermost' do" Podfile; then
-                  sed -i '' "/use_expo_modules!/a\\
-                      pod \"Yoga\", :path => \"../node_modules/react-native/ReactCommon/yoga\"" Podfile
-                  echo "已追加Yoga依赖到target 'Mattermost'块（在use_expo_modules!之后，4空格缩进）"
-                else
-                  echo "Podfile中未找到target 'Mattermost'，无法追加Yoga依赖"
-                  exit 1
-                fi
+                echo "Podfile中未找到target 'Mattermost'，无法追加Yoga依赖"
+                exit 1
               fi
             fi
             echo "更新后的Podfile内容："
             cat Podfile
-            if grep -q 'pod "Yoga"' Podfile || grep -q "Yoga:" Podfile.lock 2>/dev/null; then
-              echo "确认Yoga依赖已存在（Podfile或Podfile.lock）"
-            else
-              echo "Yoga依赖添加失败"
-              exit 1
-            fi
             # 修补glog以确保config.h可用
             if [ -d "Pods/glog" ]; then
               echo "检查glog的config.h"
               if [ ! -f "Pods/glog/config.h" ]; then
                 echo "未找到config.h，尝试从react-native生成"
-                GLOG_SRC="../node_modules/react-native/third-party/glog-0.3.5"
-                if [ -d "$GLOG_SRC" ]; then
+                GLOG_SRC=$(find ../node_modules/react-native/third-party -type d -name "glog-*" | head -n 1)
+                if [ -n "$GLOG_SRC" ] && [ -d "$GLOG_SRC" ]; then
                   cd "$GLOG_SRC"
                   ./configure --host arm-apple-darwin || true
                   if [ -f "config.h" ]; then
@@ -121,19 +110,38 @@ workflows:
                   fi
                   cd -
                 else
-                  echo "未找到react-native的glog源，无法生成config.h"
-                  exit 1
+                  echo "未找到react-native的glog源，尝试使用预生成config.h"
+                  if [ -f "../node_modules/react-native/scripts/ios-configure-glog.sh" ]; then
+                    sh ../node_modules/react-native/scripts/ios-configure-glog.sh || true
+                    if [ -f "config.h" ]; then
+                      mkdir -p Pods/glog
+                      cp config.h Pods/glog/config.h
+                      echo "已通过ios-configure-glog.sh生成并复制config.h到Pods/glog"
+                    else
+                      echo "ios-configure-glog.sh未能生成config.h"
+                      exit 1
+                    fi
+                  else
+                    echo "未找到ios-configure-glog.sh，无法生成config.h"
+                    exit 1
+                  fi
                 fi
               fi
+            fi
+            pod install --repo-update
+            echo "已清理Pods缓存并完成pod install"
+            echo "Podfile.lock内容："
+            cat Podfile.lock 2>/dev/null || echo "Podfile.lock未生成"
+            if grep -q 'pod "Yoga"' Podfile || grep -q "Yoga:" Podfile.lock 2>/dev/null; then
+              echo "确认Yoga依赖已存在（Podfile或Podfile.lock）"
+            else
+              echo "Yoga依赖添加失败"
+              exit 1
             fi
           else
             echo "未找到Podfile"
             exit 1
           fi
-          pod install --repo-update
-          echo "已清理Pods缓存并完成pod install"
-          echo "Podfile.lock内容："
-          cat Podfile.lock 2>/dev/null || echo "Podfile.lock未生成"
 
       - name: "更新Alamofire到最新版本"
         script: |
