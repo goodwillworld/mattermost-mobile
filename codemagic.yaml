@@ -68,7 +68,7 @@ workflows:
             echo "在ios/Podfile未找到Podfile"
           fi
 
-      - name: "清理Pods缓存并确保Yoga依赖"
+      - name: "清理Pods缓存并确保Yoga依赖1"
         script: |
           set -euo pipefail
           cd ios
