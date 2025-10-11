@@ -103,20 +103,29 @@ workflows:
                 echo "未找到config.h，尝试从react-native生成"
                 GLOG_SRC=$(find ../node_modules/react-native/third-party -type d -name "glog-*" | head -n 1)
                 if [ -n "$GLOG_SRC" ] && [ -d "$GLOG_SRC" ]; then
+                  echo "找到glog源目录：$GLOG_SRC"
                   cd "$GLOG_SRC"
-                  ./configure --host arm-apple-darwin || true
-                  if [ -f "config.h" ]; then
-                    cp config.h "../../../ios/Pods/glog/config.h"
-                    echo "已复制config.h到Pods/glog"
+                  if [ -f "./configure" ]; then
+                    echo "运行configure生成config.h"
+                    ./configure --host arm-apple-darwin
+                    if [ -f "config.h" ]; then
+                      mkdir -p "../../../ios/Pods/glog"
+                      cp config.h "../../../ios/Pods/glog/config.h"
+                      echo "已复制config.h到Pods/glog"
+                    else
+                      echo "configure未生成config.h"
+                      exit 1
+                    fi
                   else
-                    echo "glog配置失败，无法生成config.h"
+                    echo "glog源目录中未找到configure脚本"
                     exit 1
                   fi
                   cd -
                 else
-                  echo "未找到react-native的glog源，尝试使用预生成config.h"
+                  echo "未找到react-native的glog源，尝试使用ios-configure-glog.sh"
                   if [ -f "../node_modules/react-native/scripts/ios-configure-glog.sh" ]; then
-                    sh ../node_modules/react-native/scripts/ios-configure-glog.sh || true
+                    echo "运行ios-configure-glog.sh"
+                    sh ../node_modules/react-native/scripts/ios-configure-glog.sh
                     if [ -f "config.h" ]; then
                       mkdir -p Pods/glog
                       cp config.h Pods/glog/config.h
@@ -126,11 +135,24 @@ workflows:
                       exit 1
                     fi
                   else
-                    echo "未找到ios-configure-glog.sh，无法生成config.h"
-                    exit 1
+                    echo "未找到ios-configure-glog.sh，尝试从预生成文件复制"
+                    PREBUILT_CONFIG=$(find ../node_modules/react-native -type f -name "config.h" | head -n 1)
+                    if [ -n "$PREBUILT_CONFIG" ] && [ -f "$PREBUILT_CONFIG" ]; then
+                      mkdir -p Pods/glog
+                      cp "$PREBUILT_CONFIG" Pods/glog/config.h
+                      echo "已从 $PREBUILT_CONFIG 复制config.h到Pods/glog"
+                    else
+                      echo "未找到任何预生成的config.h文件"
+                      exit 1
+                    fi
                   fi
                 fi
+              else
+                echo "config.h已存在于Pods/glog，无需生成"
               fi
+            else
+              echo "Pods/glog目录不存在，可能未正确安装glog"
+              exit 1
             fi
             pod install --repo-update
             echo "已清理Pods缓存并完成pod install"
@@ -322,7 +344,7 @@ workflows:
               bs = cfg.build_settings
               bs['SWIFT_VERSION'] = '5.9'
               if bs['IPHONEOS_DEPLOYMENT_TARGET'].to_s < '16.0'
-              bs['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'
+                bs['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'
               end
               bs['SWIFT_STRICT_CONCURRENCY'] = 'minimal'
             end
@@ -457,11 +479,11 @@ workflows:
               t.build_configurations.each do |cfg|
                 next unless cfg.name == 'Release'
                 bs = cfg.build_settings
-                bs['PRODUCT_BUNDLE_IDENTIFIER'] = spec[:bundle]
+                bs['PRODUCT_BUNDLE_IDENTIFIER'] = targets[t.name][:bundle]
                 bs['DEVELOPMENT_TEAM'] = TEAM
                 bs['CODE_SIGN_STYLE'] = 'Manual'
                 bs['CODE_SIGN_IDENTITY[sdk=iphoneos*]'] = 'Apple Distribution'
-                bs['PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]'] = spec[:profile]
+                bs['PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]'] = targets[t.name][:profile]
                 bs.delete('PROVISIONING_PROFILE')
                 bs.delete('CODE_SIGN_IDENTITY')
               end
