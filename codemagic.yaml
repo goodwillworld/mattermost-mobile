@@ -78,14 +78,17 @@ workflows:
           if [ -f "Podfile" ]; then
             echo "Podfile内容："
             cat Podfile
-            if grep -q 'pod "Yoga"' Podfile; then
+            if grep -q 'pod\s*"Yoga"' Podfile; then
               echo "Podfile已包含Yoga依赖，跳过追加"
             else
               if grep -q "target 'Mattermost' do" Podfile; then
-                # 确保在use_expo_modules!后追加，且保持正确缩进
-                sed -i '' "/use_expo_modules!/a\\
-          pod \"Yoga\", :path => \"../node_modules/react-native/ReactCommon/yoga\"" Podfile
-                echo "已追加Yoga依赖到target 'Mattermost'块（在use_expo_modules!之后，4空格缩进）"
+                if grep -q "use_expo_modules!" Podfile; then
+                  awk '/use_expo_modules!/ {print; print "  pod \"Yoga\", :path => \"../node_modules/react-native/ReactCommon/yoga\""; next} 1' Podfile > Podfile.tmp && mv Podfile.tmp Podfile
+                  echo "已追加Yoga依赖到target 'Mattermost'块（在use_expo_modules!之后，2空格缩进）"
+                else
+                  echo "Podfile中未找到use_expo_modules!，无法追加Yoga依赖"
+                  exit 1
+                fi
               else
                 echo "Podfile中未找到target 'Mattermost'，无法追加Yoga依赖"
                 exit 1
@@ -133,7 +136,7 @@ workflows:
             echo "已清理Pods缓存并完成pod install"
             echo "Podfile.lock内容："
             cat Podfile.lock 2>/dev/null || echo "Podfile.lock未生成"
-            if grep -q 'pod "Yoga"' Podfile || grep -q "Yoga:" Podfile.lock 2>/dev/null; then
+            if grep -q 'pod\s*"Yoga"' Podfile || grep -q "Yoga:" Podfile.lock 2>/dev/null; then
               echo "确认Yoga依赖已存在（Podfile或Podfile.lock）"
             else
               echo "Yoga依赖添加失败"
@@ -319,7 +322,7 @@ workflows:
               bs = cfg.build_settings
               bs['SWIFT_VERSION'] = '5.9'
               if bs['IPHONEOS_DEPLOYMENT_TARGET'].to_s < '16.0'
-                bs['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'
+              bs['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'
               end
               bs['SWIFT_STRICT_CONCURRENCY'] = 'minimal'
             end
@@ -451,7 +454,6 @@ workflows:
             }
             proj.targets.each do |t|
               next unless targets.key?(t.name)
-              spec = targets[t.name]
               t.build_configurations.each do |cfg|
                 next unless cfg.name == 'Release'
                 bs = cfg.build_settings
